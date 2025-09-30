@@ -24,10 +24,13 @@ defmodule AshAi.Mcp.Server do
       ]
       |> Keyword.merge(opts)
 
+    version = expected_protocol_version(conn, opts)
+
     case process_request(body, session_id, opts) do
       {:initialize_response, response, new_session_id} ->
         # Return the initialize response with a session ID header
         conn
+        |> Plug.Conn.put_resp_header("mcp-protocol-version", version)
         |> Plug.Conn.put_resp_header("content-type", "application/json")
         |> Plug.Conn.put_resp_header("mcp-session-id", new_session_id)
         |> Plug.Conn.send_resp(200, response)
@@ -35,18 +38,14 @@ defmodule AshAi.Mcp.Server do
       {:json_response, response, _session_id} ->
         # Regular JSON response
         conn
-        |> Plug.Conn.put_resp_header("content-type", "application/json")
-        |> Plug.Conn.send_resp(200, response)
-
-      {:batch_response, response, _session_id} ->
-        # Batch response
-        conn
+        |> Plug.Conn.put_resp_header("mcp-protocol-version", version)
         |> Plug.Conn.put_resp_header("content-type", "application/json")
         |> Plug.Conn.send_resp(200, response)
 
       {:no_response, _, _} ->
         # For notifications or other messages that don't require a response
         conn
+        |> Plug.Conn.put_resp_header("mcp-protocol-version", version)
         |> Plug.Conn.send_resp(202, "")
     end
   end
@@ -54,7 +53,7 @@ defmodule AshAi.Mcp.Server do
   @doc """
   Process an HTTP GET request to open an SSE stream
   """
-  def handle_get(conn, _session_id) do
+  def handle_get(conn, session_id) do
     accept_header = Plug.Conn.get_req_header(conn, "accept")
 
     if Enum.any?(accept_header, &String.contains?(&1, "text/event-stream")) do
@@ -66,15 +65,33 @@ defmodule AshAi.Mcp.Server do
 
       # Set up SSE stream
       conn
+      |> Plug.Conn.put_resp_header(
+        "mcp-protocol-version",
+        expected_protocol_version(conn, conn.assigns[:router_opts] || [])
+      )
       |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
-      |> Plug.Conn.put_resp_header("cache-control", "no-cache")
+      |> Plug.Conn.put_resp_header("cache-control", "no-store")
       # Send the post_url in an endpoint event according to MCP specification
       |> Plug.Conn.send_chunked(200)
-      |> send_sse_event("endpoint", Jason.encode!(%{"url" => post_url}))
+      |> send_sse_event(
+        "endpoint",
+        Jason.encode!(%{
+          "url" => post_url,
+          "_meta" => %{
+            "endpoint" => post_url,
+            "sessionId" => session_id,
+            "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601()
+          }
+        })
+      )
       |> Plug.Conn.halt()
     else
       # Client doesn't support SSE
       conn
+      |> Plug.Conn.put_resp_header(
+        "mcp-protocol-version",
+        expected_protocol_version(conn, conn.assigns[:router_opts] || [])
+      )
       |> Plug.Conn.send_resp(400, "Client must accept text/event-stream")
     end
   end
@@ -148,20 +165,11 @@ defmodule AshAi.Mcp.Server do
         process_message(message, session_id, opts)
 
       {:ok, batch} when is_list(batch) ->
-        # Handle batch requests
-        responses = Enum.map(batch, fn item -> process_message(item, session_id, opts) end)
-
-        # Filter out no_response items and format the response
-        response_items = Enum.filter(responses, fn {type, _, _} -> type != :no_response end)
-
-        if Enum.empty?(response_items) do
-          # All items were notifications, no response needed
-          {:no_response, nil, session_id}
-        else
-          # Convert each response to its JSON representation
-          json_responses = Enum.map(response_items, fn {_, json, _} -> json end)
-          {:batch_response, "[#{Enum.join(json_responses, ",")}]", session_id}
-        end
+        # JSON-RPC batching removed per MCP 2025-06-18
+        {:json_response,
+         json_rpc_error_response(nil, -32_600, "Batch requests are not supported", %{
+           "reason" => "json-rpc-batching-removed"
+         }), session_id}
 
       {:error, error} ->
         # Handle parsing errors
@@ -181,7 +189,7 @@ defmodule AshAi.Mcp.Server do
         # Handle initialize request
         new_session_id = session_id || Ash.UUIDv7.generate()
 
-        protocol_version_statement = opts[:protocol_version_statement] || "2025-03-26"
+        protocol_version_statement = Keyword.get(opts, :protocol_version_statement, "2025-06-18")
 
         # Return capabilities
         response = %{
@@ -218,25 +226,33 @@ defmodule AshAi.Mcp.Server do
         {:no_response, nil, session_id}
 
       %{"method" => "tools/list", "id" => id} ->
-        tools =
+        items =
           opts
           |> tools()
-          |> Enum.map(fn function ->
+          |> Enum.map(fn %{tool: tool_def, function: function} ->
             %{
               "name" => function.name,
+              "title" => tool_def.title,
               "description" => function.description,
-              "inputSchema" => function.parameters_schema
+              "inputSchema" => function.parameters_schema,
+              "defaultContentType" => tool_def.default_content_type || "application/json",
+              "outputSchema" => tool_def.output_schema,
+              "_meta" =>
+                %{}
+                |> put_if("category", tool_def.category)
+                |> put_if("version", tool_def.version)
             }
           end)
 
-        response = %{
-          "jsonrpc" => "2.0",
-          "id" => id,
-          "result" => %{
-            "tools" => tools
+        result = %{
+          "tools" => items,
+          "_meta" => %{
+            "count" => length(items),
+            "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601()
           }
         }
 
+        response = %{"jsonrpc" => "2.0", "id" => id, "result" => result}
         {:json_response, Jason.encode!(response), session_id}
 
       %{"method" => "tools/call", "id" => id, "params" => params} ->
@@ -254,7 +270,7 @@ defmodule AshAi.Mcp.Server do
 
         opts
         |> tools()
-        |> Enum.find(&(&1.name == tool_name))
+        |> Enum.find(&(&1.function.name == tool_name))
         |> case do
           nil ->
             response = %{
@@ -268,7 +284,9 @@ defmodule AshAi.Mcp.Server do
 
             {:json_response, Jason.encode!(response), session_id}
 
-          tool ->
+          %{tool: tool_def, function: function_struct} ->
+            started_at = System.monotonic_time(:microsecond)
+
             context =
               opts
               |> Keyword.take([:actor, :tenant, :context])
@@ -279,30 +297,92 @@ defmodule AshAi.Mcp.Server do
                 &Map.put(&1, :otp_app, opts[:otp_app])
               )
 
-            case tool.function.(tool_args, context) do
-              {:ok, result, _} ->
-                response = %{
-                  "jsonrpc" => "2.0",
-                  "id" => id,
-                  "result" => %{
-                    "isError" => false,
-                    "content" => [%{"type" => "text", "text" => result}]
-                  }
-                }
+            case function_struct.function.(tool_args, context) do
+              {:ok, result_text, _processed} ->
+                finished_at = System.monotonic_time(:microsecond)
 
+                data =
+                  case Jason.decode(result_text) do
+                    {:ok, decoded} -> decoded
+                    _ -> result_text
+                  end
+
+                # Build resource links
+                public_base_url =
+                  Keyword.get(opts, :public_base_url) || System.get_env("MCP_PUBLIC_URL") || ""
+
+                base =
+                  tool_def.resource
+                  |> Module.split()
+                  |> List.last()
+                  |> String.replace_suffix("AfterAction", "")
+                  |> String.downcase()
+
+                default_links =
+                  if (tool_def.resource_links || []) == [] do
+                    base_url = String.trim_trailing(public_base_url, "/")
+                    feed = base_url <> "/" <> base <> "-feed"
+
+                    [
+                      %{
+                        "href" => feed,
+                        "title" => "Collection",
+                        "type" => "application/vnd.api+json",
+                        "_meta" => %{"rel" => "collection"}
+                      },
+                      %{
+                        "href" => feed <> "/item",
+                        "title" => "Item",
+                        "type" => "application/vnd.api+json",
+                        "_meta" => %{"rel" => "item"}
+                      }
+                    ]
+                  else
+                    tool_def.resource_links
+                  end
+
+                result_payload =
+                  if Keyword.has_key?(opts, :public_base_url) do
+                    AshAi.Mcp.ResponseBuilder.tool_result(
+                      content_type: tool_def.default_content_type || "application/json",
+                      data: data,
+                      schema: tool_def.output_schema,
+                      resource_links: default_links,
+                      session_id: session_id,
+                      request_id: id,
+                      started_at: started_at,
+                      finished_at: finished_at,
+                      meta_builder: tool_def.meta_builder
+                    )
+                  else
+                    %{
+                      "isError" => false,
+                      "content" => [%{"type" => "text", "text" => result_text}]
+                    }
+                  end
+
+                response = %{"jsonrpc" => "2.0", "id" => id, "result" => result_payload}
                 {:json_response, Jason.encode!(response), session_id}
 
-              {:error, error} ->
-                response = %{
-                  "jsonrpc" => "2.0",
-                  "id" => id,
-                  "error" => %{
-                    "code" => -32_000,
-                    "message" => "Tool execution failed",
-                    "data" => %{"error" => error}
-                  }
-                }
+              {:error, error_text} ->
+                finished_at = System.monotonic_time(:microsecond)
 
+                error_map =
+                  case Jason.decode(error_text) do
+                    {:ok, decoded} when is_map(decoded) -> decoded
+                    _ -> %{"errors" => List.wrap(error_text)}
+                  end
+
+                payload =
+                  AshAi.Mcp.ResponseBuilder.tool_error(
+                    error: error_map,
+                    session_id: session_id,
+                    request_id: id,
+                    started_at: started_at,
+                    finished_at: finished_at
+                  )
+
+                response = %{"jsonrpc" => "2.0", "id" => id, "result" => payload}
                 {:json_response, Jason.encode!(response), session_id}
             end
         end
@@ -347,14 +427,21 @@ defmodule AshAi.Mcp.Server do
         opts
       end
 
-    opts
-    |> Keyword.take([:otp_app, :tools, :actor, :context, :tenant, :actions])
-    |> Keyword.update(
-      :context,
-      %{otp_app: opts[:otp_app]},
-      &Map.put(&1, :otp_app, opts[:otp_app])
-    )
-    |> AshAi.functions()
+    base_opts =
+      opts
+      |> Keyword.take([:otp_app, :tools, :actor, :context, :tenant, :actions])
+      |> Keyword.update(
+        :context,
+        %{otp_app: opts[:otp_app]},
+        &Map.put(&1, :otp_app, opts[:otp_app])
+      )
+
+    defs = AshAi.exposed_tools(base_opts)
+    funcs = AshAi.functions(base_opts)
+
+    for tool_def <- defs, function <- funcs, function.name == to_string(tool_def.name) do
+      %{tool: enrich_tool(tool_def), function: function}
+    end
   end
 
   @doc """
@@ -367,6 +454,9 @@ defmodule AshAi.Mcp.Server do
     end
   end
 
+  def parse_json_rpc(%{"_json" => list}) when is_list(list), do: {:ok, list}
+  def parse_json_rpc(%{_json: list}) when is_list(list), do: {:ok, list}
+
   def parse_json_rpc(request) when is_map(request) do
     {:ok, request}
   end
@@ -374,14 +464,59 @@ defmodule AshAi.Mcp.Server do
   @doc """
   Create a standard JSON-RPC error response
   """
-  def json_rpc_error_response(id, code, message, data \\ nil) do
+  def json_rpc_error_response(id, code, message, meta \\ nil) do
     error = %{"code" => code, "message" => message}
-    error = if data, do: Map.put(error, "data", data), else: error
+    error = if meta, do: Map.put(error, "_meta", meta), else: error
 
     Jason.encode!(%{
       "jsonrpc" => "2.0",
       "id" => id,
       "error" => error
+    })
+  end
+
+  defp expected_protocol_version(conn, opts) do
+    case conn.assigns[:router_opts] do
+      nil -> Keyword.get(opts, :protocol_version_statement, "2025-06-18")
+      _ -> Keyword.get(opts, :protocol_version_statement, "2025-06-18")
+    end
+  end
+
+  defp put_if(map, _key, nil), do: map
+  defp put_if(map, key, value), do: Map.put(map, key, value)
+
+  defp enrich_tool(tool_def) do
+    title =
+      tool_def.name
+      |> to_string()
+      |> String.replace("_", " ")
+      |> String.split(~r/\s+/)
+      |> Enum.map_join(" ", &String.capitalize/1)
+
+    category =
+      tool_def.resource
+      |> Module.split()
+      |> List.last()
+
+    output_schema =
+      try do
+        AshAi.JsonSchema.default_output_schema(%{
+          action: tool_def.action,
+          resource: tool_def.resource,
+          load: tool_def.load
+        })
+      rescue
+        _ -> %{"anyOf" => [%{"type" => "object"}]}
+      end
+
+    Map.merge(Map.from_struct(tool_def), %{
+      title: title,
+      default_content_type: "application/json",
+      output_schema: output_schema,
+      category: category,
+      version: "1.0.0",
+      resource_links: List.wrap(Map.get(tool_def, :resource_links) || []),
+      meta_builder: nil
     })
   end
 end
