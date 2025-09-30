@@ -40,76 +40,99 @@ Both the dev & production MCP servers can be installed with
 
 To install the dev MCP server, add the `AshAi.Mcp.Dev` plug to your
 endpoint module, in the `code_reloading?` block. By default the
-mcp server will be available under `http://localhost:4000/ash_ai/mcp`.
-
-
+MCP server will be available under `http://localhost:4000/mcp`.
 
 ```elixir
   if code_reloading? do
     socket "/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket
 
     plug AshAi.Mcp.Dev,
-      # see the note below on protocol versions below
-      protocol_version_statement: "2024-11-05",
-      otp_app: :your_app
+      otp_app: :your_app,
+      path: "/mcp"  # Optional, defaults to "/mcp"
 ```
 
 We are still experimenting to see what tools (if any) are useful while developing with agents.
 
 ### Production MCP Server
 
-AshAi provides a pre-built MCP server that can be used to expose your tool definitions to an MCP client (typically some kind of IDE, or Claude Desktop for example).
+AshAi ships a production-ready MCP router that targets the **2025-06-18** specification with IdP-agnostic OAuth 2.1 bearer token support. Every request must set the `MCP-Protocol-Version` header to `2025-06-18`; the router rejects missing or downgraded versions with a JSON-RPC error.
 
-The protocol version we implement is 2025-03-26. As of this writing, many tools have not yet been updated to support this version. You will generally need to use some kind of proxy until tools have been updated accordingly. We suggest this one, provided by tidewave. https://github.com/tidewave-ai/mcp_proxy_rust#installation
+The protocol version we implement is 2025-06-18. As of this writing, many tools have not yet been updated to support this version. You will generally need to use some kind of proxy until tools have been updated accordingly. We suggest this one, provided by tidewave. https://github.com/tidewave-ai/mcp_proxy_rust#installation
 
-However, as of the writing of this guide, it requires setting a previous protocol version as noted above.
+```bash
+# Basic setup with OIDC/JWKS (Auth0, Okta, etc.)
+mix ash_ai.gen.mcp \
+  --user MyApp.Accounts.User \
+  --issuer "https://my-tenant.auth0.com" \
+  --audience "https://api.example.com/mcp"
 
-#### Roadmap
-
-- Implement OAuth2 flow with AshAuthentication (long term)
-- Implement support for more than just tools, i.e resources etc.
-- Implement sessions, and provide a session id context to tools (this code is just commented out, and can be uncommented, just needs timeout logic for inactive sesions)
-
-#### Installation
-
-##### Authentication
-
-We don't currently support the OAuth2 flow out of the box with AshAi, but the goal is to eventually support this with AshAuthentication. You can always implement that yourself, but the quickest way to value is to use the new `api_key` strategy.
-
-If you haven't installed `AshAuthentication` yet, install it like so: `mix igniter.install ash_authentication --auth-strategy api_key`.
-If its already been installed, and you haven't set up API keys, use `mix ash_authentication.add_strategy api_key`.
-
-Then, create a separate pipeline for `:mcp`, and add the api key plug to it:
-
-```elixir
-pipeline :mcp do
-  plug AshAuthentication.Strategy.ApiKey.Plug,
-    resource: YourApp.Accounts.User,
-    # Use `required?: false` to allow unauthenticated
-    # users to connect, for example if some tools
-    # are publicly accessible.
-    required?: false
-end
+# Or with default AshAuthentication JWT verification
+mix ash_ai.gen.mcp --user MyApp.Accounts.User
 ```
 
-##### Add the MCP server to your router
+The generator creates:
+
+- An `:mcp` pipeline with `AshAi.Mcp.Auth.OAuthBearerPlug` for OAuth 2.1 bearer token verification
+- A `/mcp` scope forwarding to the router with structured tool results
+- Dev MCP plug configuration for your endpoint
+
+Configure the following environment variables before starting your server:
+
+```bash
+# Required for all setups
+MCP_PUBLIC_URL=https://your-app.com
+MCP_REQUIRED_SCOPES=mcp:access
+
+# When using OIDC/JWKS with --issuer flag
+MCP_ISSUER=https://my-tenant.auth0.com
+MCP_RESOURCE_INDICATOR=https://your-app.com/mcp
+```
+
+Generated router snippet (with OIDC/JWKS):
 
 ```elixir
+# Pipeline with OIDC/JWKS verification
+pipeline :mcp do
+  plug AshAi.Mcp.Auth.OAuthBearerPlug,
+    otp_app: :my_app,
+    verifier: &AshAi.Mcp.Auth.OidcJwksVerifier.verify/4,
+    verifier_context: [
+      issuer: System.fetch_env!("MCP_ISSUER"),
+      resource_indicator: System.fetch_env!("MCP_RESOURCE_INDICATOR"),
+      actor_resource: MyApp.Accounts.User,
+      algorithms: ["RS256"]
+    ],
+    public_base_url: System.fetch_env!("MCP_PUBLIC_URL"),
+    resource_path: "/mcp",
+    required_scopes: System.fetch_env!("MCP_REQUIRED_SCOPES"),
+    required?: true
+end
+
 scope "/mcp" do
   pipe_through :mcp
 
   forward "/", AshAi.Mcp.Router,
+    otp_app: :my_app,
+    resource_path: "/mcp",
+    public_base_url: System.fetch_env!("MCP_PUBLIC_URL"),
+    authorization_servers: ["https://my-tenant.auth0.com/.well-known/oauth-authorization-server"],
+    resource_signing_algorithms_supported: ["RS256"],
+    required_scopes: System.fetch_env!("MCP_REQUIRED_SCOPES"),
+    oauth_required?: true,
+    # See documentation/topics/mcp_oauth.md for configuration guidance.
     tools: [
       :list,
       :of,
       :tools
     ],
-    # For many tools, you will need to set the `protocol_version_statement` to the older version.
-    protocol_version_statement: "2024-11-05",
-    otp_app: :my_app
+    # If you must support legacy clients, see the note below.
 end
 ```
+Need to support legacy clients? Run `mix ash_ai.gen.mcp --allow-legacy-protocol` to pin the router to `2024-11-05`; the generated code will emit warnings so you remember to upgrade.
 
+> **Tip:** IDEs or proxies that have not yet adopted 2025-06-18 must forward the new header on every request. If you are testing via a proxy, verify it forwards `MCP-Protocol-Version`.
+
+> **Tip:** The OAuth implementation is IdP-agnostic. You can use OAuth 2.1/OIDC providers such as Auth0, Okta, or Azure AD by configuring the appropriate issuer and verification method. See `documentation/topics/mcp_oauth.md` for provider-specific examples.
 ## `mix ash_ai.gen.chat`
 
 This is a new and experimental tool to generate a chat feature for your Ash & Phoenix application. It is backed by `ash_oban` and `ash_postgres`, using `pub_sub` to stream messages to the client. This is primarily a tool to get started with chat features and is by no means intended to handle every case you can come up with.
@@ -188,7 +211,7 @@ Example:
 tools do
   # Returns only public attributes
   tool :read_posts, MyApp.Blog.Post, :read
-  
+
   # Returns public attributes AND loaded relationships/calculations
   # Note: loaded fields can include private attributes
   tool :read_posts_with_details, MyApp.Blog.Post, :read,
@@ -519,9 +542,9 @@ end
 
 ## Building a Vector Index
 
-If your database stores more than ~10,000 vectors, you may see search performance degrade. You can ameliorate this by building an index on the vector column. Vector indices come at the expense of write speeds and higher resource usage. 
+If your database stores more than ~10,000 vectors, you may see search performance degrade. You can ameliorate this by building an index on the vector column. Vector indices come at the expense of write speeds and higher resource usage.
 
-The below example uses an `hnsw` index, which trades higher memory usage and vector build times for faster query speeds. An `ivfflat` index will have different settings, faster build times, lower memory usage, but slower query speeds. Do research and consider the tradeoffs for your use case. 
+The below example uses an `hnsw` index, which trades higher memory usage and vector build times for faster query speeds. An `ivfflat` index will have different settings, faster build times, lower memory usage, but slower query speeds. Do research and consider the tradeoffs for your use case.
 
 ```elixir
   postgres do
@@ -552,7 +575,7 @@ The below example uses an `hnsw` index, which trades higher memory usage and vec
 2. Run `iex -S mix` and then run `AshAi.iex_chat` to start chatting with your app.
 3. Build your own chat interface. See the implementation of `AshAi.iex_chat` to see how its done.
 
-## Contributing 
+## Contributing
 
 1. make sure to run `mix test.create && mix test.migrate` to set up locally
 1. ensure that `mix check` passes

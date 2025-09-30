@@ -5,6 +5,25 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 <!-- changelog -->
 
+## Unreleased
+
+### Breaking Changes
+
+- Replace API-key MCP auth with IdP-agnostic `AshAi.Mcp.Auth.OAuthBearerPlug`.
+- Change Dev MCP plug default path to `/mcp` (was `/ash_ai/mcp`).
+
+### Features
+
+- Require `MCP-Protocol-Version: 2025-06-18`, reject JSON-RPC batching, and add SSE metadata across the MCP router.
+- Emit structured `tool_result`, `tool_error`, and `elicitationRequest` payloads with JSON Schemas, resource links, and `_meta` timing.
+- Introduce an ETS-backed elicitation coordinator with TTL eviction and session resume support.
+- Add IdP-agnostic OAuth 2.1 bearer token plug and protected resource metadata endpoint.
+- Add OIDC/JWKS verifier helper (`AshAi.Mcp.Auth.OidcJwksVerifier`) with JOSE verification, JWKS caching, and key rotation handling.
+- Default resource metadata signing algorithms to `RS256` when `authorization_servers` are configured.
+- Update `mix ash_ai.gen.mcp` to be IdP-agnostic with `--issuer`, `--audience`, `--alg`, and `--path`; keep `--allow-legacy-protocol` for transitional testing.
+
+
+
 ## [v0.2.13](https://github.com/ash-project/ash_ai/compare/v0.2.12...v0.2.13) (2025-09-27)
 
 

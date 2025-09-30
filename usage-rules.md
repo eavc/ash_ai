@@ -473,7 +473,7 @@ end
 
 ### Production MCP Server
 
-For production environments, set up authentication and add the MCP router:
+For production environments, configure OAuth 2.1 bearer token authentication and forward `/mcp` to the router:
 
 ```elixir
 # Add api_key strategy to your auth pipeline
@@ -498,6 +498,8 @@ scope "/mcp" do
     otp_app: :my_app
 end
 ```
+
+The generated `:mcp` pipeline includes `AshAi.Mcp.Auth.OAuthBearerPlug` for IdP-agnostic OAuth 2.1 bearer token verification. See `documentation/topics/mcp_oauth.md` for end-to-end setup instructions and required environment variables (`MCP_PUBLIC_URL`, `MCP_REQUIRED_SCOPES`, and optionally `MCP_ISSUER` and `MCP_RESOURCE_INDICATOR` for OIDC/JWKS).
 
 ## Testing
 
