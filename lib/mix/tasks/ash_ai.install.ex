@@ -61,7 +61,7 @@ if Code.ensure_loaded?(Igniter) do
           endpoint = Enum.at(endpoints, 0)
 
           if endpoint do
-            Mix.Tasks.AshAi.Gen.Mcp.add_plug_to_endpoint(igniter, endpoint, otp_app)
+            Mix.Tasks.AshAi.Gen.Mcp.add_plug_to_endpoint(igniter, endpoint, otp_app, "/mcp")
           else
             igniter
           end
@@ -84,7 +84,7 @@ if Code.ensure_loaded?(Igniter) do
             )
 
           if endpoint do
-            Mix.Tasks.AshAi.Gen.Mcp.add_plug_to_endpoint(igniter, endpoint, otp_app)
+            Mix.Tasks.AshAi.Gen.Mcp.add_plug_to_endpoint(igniter, endpoint, otp_app, "/mcp")
           else
             igniter
           end

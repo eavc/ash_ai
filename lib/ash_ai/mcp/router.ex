@@ -19,7 +19,12 @@ if Code.ensure_loaded?(Plug) do
 
     @protocol_header "mcp-protocol-version"
 
+    # Discovery metadata must remain publicly readable so clients can learn how to
+    # authenticate before negotiating the MCP session.
+    plug(AshAi.Mcp.Auth.ResourceMetadata)
+
     plug(:validate_protocol_version)
+    plug(AshAi.Mcp.Auth.OAuthBearerPlug)
 
     # Parse the request body for JSON
     plug(Plug.Parsers,
