@@ -30,6 +30,7 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 
 
+
 ## [v0.2.14](https://github.com/ash-project/ash_ai/compare/v0.2.13...v0.2.14) (2025-10-16)
 
 
@@ -38,6 +39,7 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 ### Improvements:
 
 * allow multiple full text definitions in vectorize section (#125) by Abdessabour Moutik [(#125)](https://github.com/ash-project/ash_ai/pull/125)
+
 
 ## [v0.2.13](https://github.com/ash-project/ash_ai/compare/v0.2.12...v0.2.13) (2025-09-27)
 

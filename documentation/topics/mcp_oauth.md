@@ -1,3 +1,5 @@
+
+## Troubleshooting
 # MCP OAuth Configuration
 
 Ash AI ships an IdP-agnostic MCP router that supports OAuth 2.1 bearer tokens from any compliant identity provider. The router emits structured tool responses and resource metadata required by the 2025-06-18 MCP specification, with comprehensive telemetry for observability and audit trails. This guide walks through the configuration and explains the moving parts.
