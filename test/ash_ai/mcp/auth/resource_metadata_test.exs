@@ -32,4 +32,27 @@ defmodule AshAi.Mcp.Auth.ResourceMetadataTest do
     assert payload["resource_signing_algorithms_supported"] == ["RS256"]
     assert payload["token_endpoint_auth_methods_supported"] == ["client_secret_post"]
   end
+
+  test "authorization servers derive from verifier context issuers" do
+    conn =
+      conn(:get, "/.well-known/oauth-protected-resource")
+      |> assign(:router_opts,
+        public_base_url: "https://example.invalid",
+        resource_path: "/mcp",
+        verifier_context: [
+          issuer: "https://issuer.example.invalid",
+          issuers: ["https://tenant.example", "https://issuer.example.invalid"],
+          authorization_servers: []
+        ]
+      )
+
+    conn = ResourceMetadata.call(conn, ResourceMetadata.init([]))
+
+    payload = Jason.decode!(conn.resp_body)
+
+    assert payload["authorization_servers"] == [
+             "https://issuer.example.invalid/.well-known/oauth-authorization-server",
+             "https://tenant.example/.well-known/oauth-authorization-server"
+           ]
+  end
 end

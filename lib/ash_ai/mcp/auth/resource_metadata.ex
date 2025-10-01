@@ -58,9 +58,9 @@ defmodule AshAi.Mcp.Auth.ResourceMetadata do
 
     authorization_servers =
       opts
-      |> Map.get(:authorization_servers) || System.get_env("MCP_AUTHORIZATION_SERVERS") ||
-        []
-        |> normalize_list()
+      |> Map.get(:authorization_servers, System.get_env("MCP_AUTHORIZATION_SERVERS"))
+      |> derive_authorization_servers(opts)
+      |> normalize_list()
 
     documentation =
       opts
@@ -151,4 +151,68 @@ defmodule AshAi.Mcp.Auth.ResourceMetadata do
       ["RS256"]
     end
   end
+
+  defp derive_authorization_servers(value, opts) do
+    value
+    |> normalize_authorization_value()
+    |> case do
+      [] -> authorization_servers_from_context(Map.get(opts, :verifier_context))
+      list -> list
+    end
+  end
+
+  defp normalize_authorization_value(nil), do: []
+
+  defp normalize_authorization_value(value) do
+    value
+    |> normalize_list_like()
+    |> Enum.reject(&(&1 in [nil, ""]))
+  end
+
+  defp authorization_servers_from_context(context) do
+    context = mapify(context)
+
+    explicit =
+      (Map.get(context, :authorization_servers) ||
+         Map.get(context, "authorization_servers") || [])
+      |> normalize_authorization_value()
+
+    issuers =
+      (Map.get(context, :issuers) || Map.get(context, "issuers") || [])
+      |> normalize_authorization_value()
+
+    issuer =
+      (Map.get(context, :issuer) || Map.get(context, "issuer"))
+      |> case do
+        nil -> []
+        value -> [to_string(value)]
+      end
+
+    issuer_servers =
+      (issuer ++ issuers)
+      |> Enum.map(&issuer_to_authorization_server/1)
+      |> Enum.reject(&is_nil/1)
+
+    explicit
+    |> Enum.concat(issuer_servers)
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp issuer_to_authorization_server(nil), do: nil
+
+  defp issuer_to_authorization_server(issuer) do
+    issuer
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> String.trim_trailing(trimmed, "/") <> "/.well-known/oauth-authorization-server"
+    end
+  end
+
+  defp mapify(value) when is_map(value), do: value
+  defp mapify(value) when is_list(value), do: Map.new(value)
+  defp mapify(_), do: %{}
 end
