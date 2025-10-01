@@ -7,6 +7,9 @@ defmodule AshAi.Mcp.Server do
   It also handles the core JSON-RPC message processing for the protocol.
   """
 
+  require Logger
+  require Macro
+
   @doc """
   Process an HTTP POST request containing JSON-RPC messages
   """
@@ -226,6 +229,8 @@ defmodule AshAi.Mcp.Server do
         {:no_response, nil, session_id}
 
       %{"method" => "tools/list", "id" => id} ->
+        started_at = System.monotonic_time(:microsecond)
+
         items =
           opts
           |> tools()
@@ -244,6 +249,15 @@ defmodule AshAi.Mcp.Server do
             }
           end)
 
+        finished_at = System.monotonic_time(:microsecond)
+        duration = max(finished_at - started_at, 0)
+
+        :telemetry.execute(
+          [:ash_ai, :mcp, :tools, :list],
+          %{duration: duration},
+          %{count: length(items), otp_app: opts[:otp_app]}
+        )
+
         result = %{
           "tools" => items,
           "_meta" => %{
@@ -259,7 +273,7 @@ defmodule AshAi.Mcp.Server do
         tool_name = params["name"]
         tool_args = params["arguments"] || %{}
 
-        opts =
+        tool_opts =
           opts
           |> Keyword.update(
             :context,
@@ -268,11 +282,19 @@ defmodule AshAi.Mcp.Server do
           )
           |> Keyword.put(:filter, fn tool -> tool.mcp == :tool end)
 
-        opts
-        |> tools()
-        |> Enum.find(&(&1.function.name == tool_name))
-        |> case do
+        tool_entry =
+          tool_opts
+          |> tools()
+          |> Enum.find(&(&1.function.name == tool_name))
+
+        case tool_entry do
           nil ->
+            :telemetry.execute(
+              [:ash_ai, :mcp, :tools, :call],
+              %{duration: 0},
+              %{status: :error, reason: :tool_not_found, tool: tool_name, otp_app: opts[:otp_app]}
+            )
+
             response = %{
               "jsonrpc" => "2.0",
               "id" => id,
@@ -288,7 +310,7 @@ defmodule AshAi.Mcp.Server do
             started_at = System.monotonic_time(:microsecond)
 
             context =
-              opts
+              tool_opts
               |> Keyword.take([:actor, :tenant, :context])
               |> Map.new()
               |> Map.update(
@@ -297,9 +319,11 @@ defmodule AshAi.Mcp.Server do
                 &Map.put(&1, :otp_app, opts[:otp_app])
               )
 
-            case function_struct.function.(tool_args, context) do
+            function_struct.function.(tool_args, context)
+            |> case do
               {:ok, result_text, _processed} ->
                 finished_at = System.monotonic_time(:microsecond)
+                duration = max(finished_at - started_at, 0)
 
                 data =
                   case Jason.decode(result_text) do
@@ -307,65 +331,49 @@ defmodule AshAi.Mcp.Server do
                     _ -> result_text
                   end
 
-                # Build resource links
-                public_base_url =
-                  Keyword.get(opts, :public_base_url) || System.get_env("MCP_PUBLIC_URL") || ""
+                public_base_url = resolve_public_base_url(tool_opts)
 
-                base =
-                  tool_def.resource
-                  |> Module.split()
-                  |> List.last()
-                  |> String.replace_suffix("AfterAction", "")
-                  |> String.downcase()
+                resource_links =
+                  resolve_resource_links(tool_def, tool_opts, data, public_base_url)
 
-                default_links =
-                  if (tool_def.resource_links || []) == [] do
-                    base_url = String.trim_trailing(public_base_url, "/")
-                    feed = base_url <> "/" <> base <> "-feed"
-
-                    [
-                      %{
-                        "href" => feed,
-                        "title" => "Collection",
-                        "type" => "application/vnd.api+json",
-                        "_meta" => %{"rel" => "collection"}
-                      },
-                      %{
-                        "href" => feed <> "/item",
-                        "title" => "Item",
-                        "type" => "application/vnd.api+json",
-                        "_meta" => %{"rel" => "item"}
-                      }
-                    ]
-                  else
-                    tool_def.resource_links
-                  end
+                meta_context = %{
+                  data: data,
+                  session_id: session_id,
+                  request_id: id,
+                  tool: tool_def,
+                  arguments: tool_args,
+                  router_opts: tool_opts,
+                  public_base_url: public_base_url,
+                  status: :ok,
+                  raw_result: result_text
+                }
 
                 result_payload =
-                  if Keyword.has_key?(opts, :public_base_url) do
-                    AshAi.Mcp.ResponseBuilder.tool_result(
-                      content_type: tool_def.default_content_type || "application/json",
-                      data: data,
-                      schema: tool_def.output_schema,
-                      resource_links: default_links,
-                      session_id: session_id,
-                      request_id: id,
-                      started_at: started_at,
-                      finished_at: finished_at,
-                      meta_builder: tool_def.meta_builder
-                    )
-                  else
-                    %{
-                      "isError" => false,
-                      "content" => [%{"type" => "text", "text" => result_text}]
-                    }
-                  end
+                  AshAi.Mcp.ResponseBuilder.tool_result(
+                    content_type: tool_def.default_content_type || "application/json",
+                    data: data,
+                    schema: tool_def.output_schema,
+                    resource_links: resource_links,
+                    session_id: session_id,
+                    request_id: id,
+                    started_at: started_at,
+                    finished_at: finished_at,
+                    meta_builder: tool_meta_builder(tool_def, tool_opts),
+                    meta_context: meta_context
+                  )
+
+                :telemetry.execute(
+                  [:ash_ai, :mcp, :tools, :call],
+                  %{duration: duration},
+                  tool_call_metadata(tool_opts, tool_def, tool_name, :ok)
+                )
 
                 response = %{"jsonrpc" => "2.0", "id" => id, "result" => result_payload}
                 {:json_response, Jason.encode!(response), session_id}
 
               {:error, error_text} ->
                 finished_at = System.monotonic_time(:microsecond)
+                duration = max(finished_at - started_at, 0)
 
                 error_map =
                   case Jason.decode(error_text) do
@@ -373,14 +381,40 @@ defmodule AshAi.Mcp.Server do
                     _ -> %{"errors" => List.wrap(error_text)}
                   end
 
+                meta_context = %{
+                  data: error_map,
+                  session_id: session_id,
+                  request_id: id,
+                  tool: tool_def,
+                  arguments: tool_args,
+                  router_opts: tool_opts,
+                  public_base_url: resolve_public_base_url(tool_opts),
+                  status: :error,
+                  error: error_map
+                }
+
                 payload =
                   AshAi.Mcp.ResponseBuilder.tool_error(
                     error: error_map,
                     session_id: session_id,
                     request_id: id,
                     started_at: started_at,
-                    finished_at: finished_at
+                    finished_at: finished_at,
+                    meta_builder: tool_meta_builder(tool_def, tool_opts),
+                    meta_context: meta_context
                   )
+
+                :telemetry.execute(
+                  [:ash_ai, :mcp, :tools, :call],
+                  %{duration: duration},
+                  tool_call_metadata(
+                    tool_opts,
+                    tool_def,
+                    tool_name,
+                    :error,
+                    :tool_execution_error
+                  )
+                )
 
                 response = %{"jsonrpc" => "2.0", "id" => id, "result" => payload}
                 {:json_response, Jason.encode!(response), session_id}
@@ -511,12 +545,133 @@ defmodule AshAi.Mcp.Server do
 
     Map.merge(Map.from_struct(tool_def), %{
       title: title,
-      default_content_type: "application/json",
+      default_content_type: Map.get(tool_def, :default_content_type) || "application/json",
       output_schema: output_schema,
       category: category,
-      version: "1.0.0",
+      version: Map.get(tool_def, :version) || "1.0.0",
       resource_links: List.wrap(Map.get(tool_def, :resource_links) || []),
-      meta_builder: nil
+      resource_link_builder: Map.get(tool_def, :resource_link_builder),
+      meta_builder: Map.get(tool_def, :meta_builder)
     })
   end
+
+  defp resolve_public_base_url(opts) do
+    opts
+    |> Keyword.get(:public_base_url)
+    |> case do
+      nil -> System.get_env("MCP_PUBLIC_URL")
+      value -> value
+    end
+    |> case do
+      nil -> nil
+      "" -> nil
+      base -> String.trim_trailing(base, "/")
+    end
+  end
+
+  defp resolve_resource_links(tool_def, opts, data, public_base_url) do
+    explicit_links = tool_def.resource_links || []
+
+    cond do
+      Enum.any?(explicit_links) ->
+        explicit_links
+
+      builder = Map.get(tool_def, :resource_link_builder) ->
+        invoke_resource_link_builder(builder, tool_def, data, opts, public_base_url)
+
+      router_builder = Keyword.get(opts, :resource_link_builder) ->
+        invoke_resource_link_builder(router_builder, tool_def, data, opts, public_base_url)
+
+      public_base_url ->
+        default_resource_links(public_base_url, tool_def)
+
+      true ->
+        []
+    end
+  end
+
+  defp invoke_resource_link_builder(builder, tool_def, data, opts, public_base_url) do
+    context = %{
+      tool: tool_def,
+      data: data,
+      router_opts: opts,
+      public_base_url: public_base_url
+    }
+
+    result =
+      cond do
+        is_function(builder, 1) -> builder.(context)
+        is_function(builder, 2) -> builder.(tool_def, data)
+        is_function(builder, 3) -> builder.(tool_def, data, context)
+        true -> []
+      end
+
+    result =
+      case result do
+        {:ok, value} -> value
+        {:ok, value, _extra} -> value
+        other -> other
+      end
+
+    result
+    |> case do
+      nil -> []
+      links when is_list(links) -> Enum.reject(links, &is_nil/1)
+      link when is_map(link) -> [link]
+      other -> List.wrap(other)
+    end
+  rescue
+    exception ->
+      Logger.warning("tool resource_link_builder failed: #{Exception.message(exception)}")
+      []
+  end
+
+  defp default_resource_links(public_base_url, tool_def) when is_binary(public_base_url) do
+    base =
+      tool_def.resource
+      |> Module.split()
+      |> List.last()
+      |> Macro.underscore()
+      |> String.replace_suffix("_after_action", "")
+
+    feed = public_base_url <> "/" <> base <> "-feed"
+
+    [
+      %{
+        "href" => feed,
+        "title" => "Collection",
+        "type" => "application/vnd.api+json",
+        "_meta" => %{"rel" => "collection"}
+      },
+      %{
+        "href" => feed <> "/item",
+        "title" => "Item",
+        "type" => "application/vnd.api+json",
+        "_meta" => %{"rel" => "item"}
+      }
+    ]
+  end
+
+  defp default_resource_links(_public_base_url, _tool_def), do: []
+
+  defp tool_meta_builder(tool_def, opts) do
+    Map.get(tool_def, :meta_builder) || Keyword.get(opts, :meta_builder)
+  end
+
+  defp tool_call_metadata(opts, tool_def, tool_name, status, reason \\ nil) do
+    base = %{
+      status: status,
+      tool: tool_name,
+      otp_app: Keyword.get(opts, :otp_app),
+      resource: tool_def.resource,
+      action: tool_def.action && tool_def.action.name
+    }
+
+    base
+    |> maybe_put(:tenant, Keyword.get(opts, :tenant))
+    |> maybe_put(:reason, reason)
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
