@@ -464,7 +464,7 @@ if Code.ensure_loaded?(Igniter) do
            otp_app,
            user,
            issuer,
-           _audience,
+           audience,
            alg,
            path
          ) do
@@ -480,6 +480,7 @@ if Code.ensure_loaded?(Igniter) do
             otp_app,
             user,
             issuer,
+            audience,
             algorithms,
             path
           )
@@ -510,7 +511,16 @@ if Code.ensure_loaded?(Igniter) do
       end
     end
 
-    defp oauth_wrapper_body(otp_app, user, issuer, algorithms, path) do
+    defp oauth_wrapper_body(otp_app, user, issuer, audience, algorithms, path) do
+      env_guidance =
+        if issuer do
+          issuer_hint = "# Set MCP_ISSUER=#{inspect(issuer)}"
+          audience_hint = if audience, do: "\n  # Set MCP_RESOURCE_INDICATOR=#{inspect(audience)}", else: "\n  # Set MCP_RESOURCE_INDICATOR to your API identifier"
+          "\n  #{issuer_hint}#{audience_hint}"
+        else
+          ""
+        end
+
       issuer_lines =
         if issuer do
           "\n      issuer: {:env!, \"MCP_ISSUER\"},\n      resource_indicator: {:env!, \"MCP_RESOURCE_INDICATOR\"},\n      algorithms: #{inspect(algorithms)}"
@@ -526,7 +536,10 @@ if Code.ensure_loaded?(Igniter) do
         end
 
       """
-        @moduledoc \"""Project-specific OAuth plug wrapper for MCP traffic.\"""
+        @moduledoc \"""
+        Project-specific OAuth plug wrapper for MCP traffic.
+        #{env_guidance}
+        \"""
 
         use AshAi.Mcp.PhoenixOAuthPlug,
           otp_app: :#{otp_app},
