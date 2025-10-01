@@ -1,6 +1,6 @@
 # MCP OAuth Configuration
 
-Ash AI ships an IdP-agnostic MCP router that supports OAuth 2.1 bearer tokens from any compliant identity provider. The router emits structured tool responses and resource metadata required by the 2025-06-18 MCP specification. This guide walks through the configuration and explains the moving parts.
+Ash AI ships an IdP-agnostic MCP router that supports OAuth 2.1 bearer tokens from any compliant identity provider. The router emits structured tool responses and resource metadata required by the 2025-06-18 MCP specification, with comprehensive telemetry for observability and audit trails. This guide walks through the configuration and explains the moving parts.
 
 ## Prerequisites
 
@@ -22,12 +22,17 @@ mix ash_ai.gen.mcp \
 # With default AshAuthentication JWT
 mix ash_ai.gen.mcp --user MyApp.Accounts.User
 
-# With DX wrappers (router + plug)
-mix ash_ai.gen.mcp --user MyApp.Accounts.User --wrappers
+# With wrappers for cleaner organization (recommended)
+mix ash_ai.gen.mcp \
+  --user MyApp.Accounts.User \
+  --wrappers \
+  --issuer "https://my-tenant.auth0.com" \
+  --audience "https://api.example.com/mcp"
 ```
 
-The wrappers option creates `MyAppWeb.McpOAuthPlug` and `MyAppWeb.McpRouter` modules so you can keep
-environment lookups and Phoenix wiring in dedicated, testable modules.
+The `--wrappers` option creates `MyAppWeb.McpOAuthPlug` and `MyAppWeb.McpRouter` modules so you can keep
+environment lookups and Phoenix wiring in dedicated, testable modules. The `--issuer` and `--audience`
+flags document expected environment variable values in the generated wrapper's moduledoc.
 
 ## Configuration
 
@@ -101,7 +106,7 @@ Key behaviors:
 
 - The router rejects requests missing `MCP-Protocol-Version: 2025-06-18` with a JSON-RPC error (`_meta.reason = "missing_protocol_version"`)
 - `/.well-known/oauth-protected-resource` advertises the resource indicator, authorization server URIs, supported scopes, and signing algorithms
-- `tools/list` and `tools/call` responses include structured content, `_meta` timing, optional resource links, and emit telemetry under `[:ash_ai, :mcp, :tools, *]`
+- `tools/list` and `tools/call` responses include structured content, `_meta` timing, optional resource links, and emit comprehensive telemetry (see [Telemetry](#telemetry) section)
 
 ### Wrapper Modules
 
@@ -392,6 +397,152 @@ pipeline :mcp do
 end
 ```
 
+## Telemetry
+
+AshAi emits telemetry events for OAuth verification and tool execution, enabling observability,
+alerting, and audit trails. All events include `:otp_app` in metadata for multi-app deployments.
+
+### OAuth Events
+
+**`[:ash_ai, :mcp, :oauth, :verify]`** - Token verification attempt
+
+Measurements:
+- `:duration` - Verification time in microseconds
+
+Metadata:
+- `:status` - `:ok` or `:error`
+- `:reason` - Error reason atom (`:invalid_token`, etc.) when status is `:error`
+- `:otp_app` - Application atom
+- `:resource_indicator` - Expected resource indicator
+- `:issuer` - Primary issuer (if configured)
+- `:issuers` - List of all configured issuers
+- `:verifier` - Verifier function name
+
+**`[:ash_ai, :mcp, :oauth, :audience_mismatch]`** - Token audience doesn't match resource indicator
+
+Measurements:
+- `:count` - Always 1
+
+Metadata:
+- `:status` - Always `:error`
+- `:otp_app` - Application atom
+- `:resource_indicator` - Expected resource indicator
+- `:provided_audiences` - List of audiences from token (max 5)
+
+**`[:ash_ai, :mcp, :oauth, :insufficient_scope]`** - Token missing required scopes
+
+Measurements:
+- `:count` - Number of missing scopes
+
+Metadata:
+- `:status` - Always `:error`
+- `:otp_app` - Application atom
+- `:required_scopes` - List of required scopes
+- `:missing_scopes` - List of missing scopes
+- `:granted_scopes` - List of granted scopes from token
+
+### Tool Events
+
+**`[:ash_ai, :mcp, :tools, :list]`** - Tools list requested
+
+Measurements:
+- `:duration` - Request processing time in microseconds
+
+Metadata:
+- `:count` - Number of tools returned
+- `:otp_app` - Application atom
+
+**`[:ash_ai, :mcp, :tools, :call]`** - Tool execution
+
+Measurements:
+- `:duration` - Execution time in microseconds
+
+Metadata:
+- `:status` - `:ok` or `:error`
+- `:tool` - Tool name
+- `:otp_app` - Application atom
+- `:resource` - Ash resource module
+- `:action` - Ash action name (if available)
+- `:tenant` - Tenant identifier (if multi-tenant)
+- `:reason` - Error reason atom (`:tool_not_found`, `:tool_execution_error`) when status is `:error`
+
+### Telemetry Handler Example
+
+```elixir
+defmodule MyApp.Telemetry do
+  require Logger
+
+  def handle_event([:ash_ai, :mcp, :oauth, :verify], measurements, metadata, _config) do
+    case metadata.status do
+      :ok ->
+        Logger.info("OAuth verification succeeded",
+          duration_us: measurements.duration,
+          issuer: metadata[:issuer]
+        )
+
+      :error ->
+        Logger.warning("OAuth verification failed",
+          duration_us: measurements.duration,
+          reason: metadata[:reason],
+          issuer: metadata[:issuer]
+        )
+    end
+  end
+
+  def handle_event([:ash_ai, :mcp, :oauth, :insufficient_scope], measurements, metadata, _config) do
+    Logger.warning("Insufficient OAuth scopes",
+      missing: metadata.missing_scopes,
+      required: metadata.required_scopes,
+      granted: metadata.granted_scopes
+    )
+
+    # Send alert if critical scope is missing
+    if "admin:write" in metadata.missing_scopes do
+      MyApp.Alerts.send_security_alert(:privilege_escalation_attempt, metadata)
+    end
+  end
+
+  def handle_event([:ash_ai, :mcp, :tools, :call], measurements, metadata, _config) do
+    case metadata.status do
+      :ok ->
+        Logger.info("Tool executed successfully",
+          tool: metadata.tool,
+          duration_ms: div(measurements.duration, 1000),
+          resource: metadata.resource
+        )
+
+        # Track metrics
+        :telemetry.execute(
+          [:my_app, :mcp, :tool_success],
+          %{count: 1},
+          %{tool: metadata.tool}
+        )
+
+      :error ->
+        Logger.error("Tool execution failed",
+          tool: metadata.tool,
+          reason: metadata.reason,
+          duration_ms: div(measurements.duration, 1000)
+        )
+    end
+  end
+end
+
+# In application.ex
+:telemetry.attach_many(
+  "mcp-oauth-handler",
+  [
+    [:ash_ai, :mcp, :oauth, :verify],
+    [:ash_ai, :mcp, :oauth, :audience_mismatch],
+    [:ash_ai, :mcp, :oauth, :insufficient_scope],
+    [:ash_ai, :mcp, :tools, :list],
+    [:ash_ai, :mcp, :tools, :call]
+  ],
+  &MyApp.Telemetry.handle_event/4,
+  nil
+)
+```
+
 ## Testing
 
 ### Verify Protected Resource Metadata
@@ -478,15 +629,54 @@ each event mirrors the entries below so you can correlate failures out-of-band.
 | Audience mismatch | 401 | `invalid_scope` | `resource` parameter echoes the expected resource indicator |
 | Missing scopes | 403 | `insufficient_scope` | `scope` and `missing` parameters enumerate requirements |
 
-Use `www_authenticate_params` (keyword/list) or a function to append custom parameters, e.g. a
-support URL or escalation contact:
+### Dynamic WWW-Authenticate Parameters
+
+Use `www_authenticate_params` to append custom parameters to the `WWW-Authenticate` header,
+such as support URLs or escalation contacts. Multiple formats are supported:
+
+**Static keyword list:**
 
 ```elixir
 plug AshAi.Mcp.Auth.OAuthBearerPlug,
-  www_authenticate_params: fn %{error: "invalid_token"} ->
-    [error_contact: "mailto:security@example.com"]
+  www_authenticate_params: [
+    error_contact: "mailto:security@example.com",
+    realm: "api"
+  ]
+```
+
+**Static map:**
+
+```elixir
+plug AshAi.Mcp.Auth.OAuthBearerPlug,
+  www_authenticate_params: %{
+    error_contact: "mailto:security@example.com"
+  }
+```
+
+**Dynamic function (receives error context):**
+
+```elixir
+plug AshAi.Mcp.Auth.OAuthBearerPlug,
+  www_authenticate_params: fn context ->
+    case context do
+      %{error: "invalid_token", reason: :invalid_issuer} ->
+        [error_contact: "mailto:security@example.com"]
+
+      %{error: "insufficient_scope", status: 403} ->
+        [error_uri: "https://docs.example.com/scopes"]
+
+      _ ->
+        []
+    end
   end
 ```
+
+The function receives a context map with:
+- `:status` - HTTP status code (401, 403)
+- `:error` - OAuth error code ("invalid_token", "insufficient_scope", etc.)
+- `:reason` - Internal reason atom
+- `:description` - Error description string
+- `:attrs` - Additional error attributes
 
 ## Resource Links & Meta Builders
 
@@ -496,24 +686,76 @@ Tool responses expose two hooks:
 - `meta_builder`: merge arbitrary keys into the `_meta` map
 
 When `public_base_url` is omitted, AshAi still returns a fully compliant `tool_result`; the
-`resourceLinks` array simply remains empty. Example:
+`resourceLinks` array simply remains empty.
+
+### Resource Link Builder
+
+The `resource_link_builder` can be configured at two levels:
+
+1. **Router level** (recommended with `--wrappers`): applies to all tools
+2. **Tool level**: configured on individual tool definitions
+
+Router-level builders take precedence. The builder receives three arguments:
+
+- `tool`: The tool definition struct with metadata
+- `data`: The decoded result data
+- `context`: Map with `:tool`, `:router_opts`, `:public_base_url`, etc.
 
 ```elixir
+# In MyAppWeb.McpRouter
 def resource_links(tool, data, _context) do
-  Enum.map(List.wrap(data), fn %{"id" => id} ->
-    %{
-      "href" => Routes.post_url(MyAppWeb.Endpoint, :show, id),
-      "title" => tool.title,
-      "type" => "application/vnd.api+json",
-      "_meta" => %{"rel" => "item"}
-    }
-  end)
-end
+  case tool.action.name do
+    :list ->
+      Enum.map(List.wrap(data), fn %{"id" => id} ->
+        %{
+          "href" => Routes.post_url(MyAppWeb.Endpoint, :show, id),
+          "title" => "Post #{id}",
+          "type" => "application/vnd.api+json",
+          "_meta" => %{"rel" => "item"}
+        }
+      end)
 
-def meta_builder(%{request_id: request_id}) do
-  %{"correlationId" => request_id}
+    _ ->
+      []
+  end
 end
 ```
+
+### Meta Builder
+
+The `meta_builder` augments the `_meta` object in tool responses. It receives a context map
+with `:data`, `:session_id`, `:request_id`, and additional tool execution context.
+
+**Supported return formats:**
+
+```elixir
+# Simple map - merged into _meta
+def meta_builder(_context) do
+  %{"correlationId" => UUID.uuid4()}
+end
+
+# Tuple with :ok - merged into _meta
+def meta_builder(_context) do
+  {:ok, %{"version" => "1.0"}}
+end
+
+# Tuple with :ok and resource_links - meta merged, links appended
+def meta_builder(%{data: data}) do
+  links = build_links_from_data(data)
+  {:ok, %{"count" => length(data)}, links}
+end
+
+# Map with :meta key - meta merged, optional :resource_links appended
+def meta_builder(_context) do
+  %{
+    meta: %{"environment" => "production"},
+    resource_links: [%{"href" => "...", "title" => "..."}]
+  }
+end
+```
+
+Resource links from `meta_builder` are appended to links from `resource_link_builder` or
+explicit tool `resource_links`.
 
 ## Legacy Compatibility
 
