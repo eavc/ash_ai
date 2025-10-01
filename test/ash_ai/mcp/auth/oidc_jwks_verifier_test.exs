@@ -1,9 +1,15 @@
 defmodule AshAi.Mcp.Auth.OidcJwksVerifierTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
-  alias AshAi.Mcp.Auth.OidcJwksVerifier
+  alias AshAi.Mcp.Auth.{JwksCache, OidcJwksVerifier}
 
   defmodule DummyActor do
+  end
+
+  setup do
+    # Clear cache between tests
+    JwksCache.clear_cache()
+    :ok
   end
 
   defp now, do: System.system_time(:second)
@@ -159,15 +165,8 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifierTest do
     jwks_old = %{"keys" => [jwk_public_map(old_jwk, kid)]}
     jwks_new = %{"keys" => [jwk_public_map(new_jwk, kid)]}
 
-    # Prime ETS cache with old JWKS for issuer
-    :ets.new(:ash_ai_jwks_cache, [:named_table, :set, :public, read_concurrency: true])
-
-    :ets.insert(
-      :ash_ai_jwks_cache,
-      {{:jwks, String.trim_trailing(issuer, "/")}, jwks_old, now() + 60}
-    )
-
     # Context contains new JWKS to be fetched on refresh
+    # The cache will use the jwks_overrides when the old key fails
     context = %{
       issuers: [issuer],
       resource_indicator: aud,
@@ -176,6 +175,15 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifierTest do
       algorithms: ["RS256"]
     }
 
+    # Prime the cache with the old (wrong) key via context override
+    # First verification will fail signature check, then force refresh with new key
+    initial_context =
+      Map.put(context, :jwks_overrides, %{String.trim_trailing(issuer, "/") => jwks_old})
+
+    # Make the cache aware of the old JWKS first
+    AshAi.Mcp.Auth.JwksCache.get_jwks(issuer, initial_context)
+
+    # Now verify with new key - this should trigger refresh and succeed
     assert {:ok, _claims, DummyActor} = OidcJwksVerifier.verify(token, :unused, [], context)
   end
 end

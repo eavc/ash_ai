@@ -30,12 +30,16 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   * `:resource_indicator` - Expected audience value (required)
   * `:actor_resource` - The Ash resource module for actor resolution (required)
   * `:algorithms` - List of allowed signing algorithms (default: `["RS256"]`)
+  * `:clock_skew_seconds` - Clock skew tolerance in seconds (default: `30`)
 
   ## JWKS Caching
 
   JWKS are cached for 15 minutes by default, respecting Cache-Control headers
   from the issuer. On signature verification failure, the cache is refreshed
   once to handle key rotation.
+
+  The cache is managed by a supervised GenServer (`AshAi.Mcp.Auth.JwksCache`)
+  with a protected ETS table to prevent cache poisoning attacks.
 
   ## Examples
 
@@ -60,8 +64,7 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
 
   require Logger
 
-  @default_cache_ttl_seconds 900
-  @jwks_cache_table :ash_ai_jwks_cache
+  alias AshAi.Mcp.Auth.JwksCache
 
   @doc """
   Verifies a JWT token using OIDC/JWKS.
@@ -86,7 +89,7 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
         {:ok, claims} ->
           with :ok <- validate_issuer(claims, context),
                :ok <- validate_audience(claims, context),
-               :ok <- validate_expiration(claims) do
+               :ok <- validate_expiration(claims, context) do
             resource = Map.fetch!(context, :actor_resource)
             {:ok, claims, resource}
           else
@@ -98,7 +101,7 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
             "Signature verification failed. Forcing JWKS refresh for #{issuer} kid=#{kid}"
           )
 
-          force_refresh_jwks(issuer)
+          JwksCache.force_refresh(issuer)
           refetch_and_verify(token, context, issuer, kid)
       end
     else
@@ -126,13 +129,15 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     resource_indicator = fetch.(context, :resource_indicator)
     actor_resource = fetch.(context, :actor_resource)
     jwks_overrides = fetch.(context, :jwks_overrides) || %{}
+    clock_skew_seconds = fetch.(context, :clock_skew_seconds) || 30
 
     %{
       issuers: issuers,
       algorithms: algorithms,
       resource_indicator: resource_indicator,
       actor_resource: actor_resource,
-      jwks_overrides: jwks_overrides
+      jwks_overrides: jwks_overrides,
+      clock_skew_seconds: clock_skew_seconds
     }
   end
 
@@ -180,9 +185,23 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   defp fetch_jwks_for_kid(context, kid) do
     issuers = Map.get(context, :issuers, [])
 
+    # First try the kid index for O(1) lookup
+    case JwksCache.find_issuer_for_kid(kid) do
+      {:ok, issuer} ->
+        case JwksCache.get_jwks(issuer, context) do
+          {:ok, jwks} -> {:ok, {issuer, jwks}}
+          {:error, _} -> fallback_issuer_search(issuers, kid, context)
+        end
+
+      :error ->
+        fallback_issuer_search(issuers, kid, context)
+    end
+  end
+
+  defp fallback_issuer_search(issuers, kid, context) do
     issuers
     |> Enum.reduce_while({:error, :no_matching_jwks}, fn issuer, _acc ->
-      case get_jwks_for_issuer(issuer, context) do
+      case JwksCache.get_jwks(issuer, context) do
         {:ok, jwks} ->
           case find_key(jwks, kid) do
             {:ok, _jwk} -> {:halt, {:ok, {issuer, jwks}}}
@@ -193,77 +212,6 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
           {:cont, {:error, :no_matching_jwks}}
       end
     end)
-  end
-
-  defp get_jwks_for_issuer(issuer, context) do
-    cache_key = {:jwks, issuer}
-
-    case get_from_cache(cache_key) do
-      {:ok, jwks} ->
-        {:ok, jwks}
-
-      :error ->
-        case fetch_jwks_from_url(issuer, context) do
-          {:ok, jwks, ttl} ->
-            put_in_cache(cache_key, jwks, ttl)
-            {:ok, jwks}
-
-          {:error, _} = error ->
-            error
-        end
-    end
-  end
-
-  defp fetch_jwks_from_url(issuer, context) do
-    issuer = String.trim_trailing(issuer, "/")
-    jwks_url = "#{issuer}/.well-known/jwks.json"
-
-    # Allow test overrides without network
-    overrides = Map.get(context, :jwks_overrides, %{})
-
-    if jwks = Map.get(overrides, issuer) do
-      {:ok, jwks, @default_cache_ttl_seconds}
-    else
-      case Req.get(url: jwks_url) do
-        {:ok, %Req.Response{status: 200, body: body, headers: headers}} when is_map(body) ->
-          ttl = parse_cache_ttl(headers)
-          {:ok, body, ttl}
-
-        {:ok, %Req.Response{status: 200, body: body, headers: headers}} ->
-          case Jason.decode(body) do
-            {:ok, map} ->
-              ttl = parse_cache_ttl(headers)
-              {:ok, map, ttl}
-
-            _ ->
-              Logger.warning("JWKS response not JSON from #{jwks_url}")
-              {:error, :jwks_fetch_failed}
-          end
-
-        {:ok, %Req.Response{status: status}} ->
-          Logger.warning("Failed to fetch JWKS from #{jwks_url}: HTTP #{status}")
-          {:error, :jwks_fetch_failed}
-
-        {:error, reason} ->
-          Logger.warning("Failed to fetch JWKS from #{jwks_url}: #{inspect(reason)}")
-          {:error, :jwks_fetch_failed}
-      end
-    end
-  end
-
-  defp parse_cache_ttl(headers) do
-    headers
-    |> Enum.find(fn {name, _value} -> String.downcase(name) == "cache-control" end)
-    |> case do
-      {_name, value} ->
-        case Regex.run(~r/max-age=(\d+)/i, value) do
-          [_, seconds] -> String.to_integer(seconds)
-          _ -> @default_cache_ttl_seconds
-        end
-
-      nil ->
-        @default_cache_ttl_seconds
-    end
   end
 
   defp find_key(%{"keys" => keys}, kid) when is_list(keys) do
@@ -311,9 +259,9 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     end
   end
 
-  defp validate_expiration(claims) do
+  defp validate_expiration(claims, context) do
     now = System.system_time(:second)
-    skew = 60
+    skew = Map.get(context, :clock_skew_seconds, 30)
 
     with :ok <- check_exp(claims, now, skew) do
       check_nbf(claims, now, skew)
@@ -371,54 +319,13 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
 
   defp stringify_keys(value), do: value
 
-  # Simple in-memory cache using ETS
-  defp ensure_cache_table do
-    case :ets.whereis(@jwks_cache_table) do
-      :undefined ->
-        :ets.new(@jwks_cache_table, [:named_table, :set, :public, read_concurrency: true])
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp get_from_cache(key) do
-    ensure_cache_table()
-
-    case :ets.lookup(@jwks_cache_table, key) do
-      [{^key, value, expires_at}] ->
-        if System.system_time(:second) < expires_at do
-          {:ok, value}
-        else
-          :ets.delete(@jwks_cache_table, key)
-          :error
-        end
-
-      [] ->
-        :error
-    end
-  end
-
-  defp put_in_cache(key, value, ttl_seconds) do
-    ensure_cache_table()
-    expires_at = System.system_time(:second) + ttl_seconds
-    :ets.insert(@jwks_cache_table, {key, value, expires_at})
-    :ok
-  end
-
-  defp force_refresh_jwks(issuer) do
-    ensure_cache_table()
-    :ets.delete(@jwks_cache_table, {:jwks, issuer})
-    :ok
-  end
-
   defp refetch_and_verify(token, context, issuer, kid) do
-    with {:ok, jwks, _ttl} <- fetch_jwks_from_url(issuer, context),
+    with {:ok, jwks} <- JwksCache.get_jwks(issuer, context),
          {:ok, jwk} <- find_key(jwks, kid),
          {:ok, claims} <- verify_signature_strict(token, jwk, context),
          :ok <- validate_issuer(claims, context),
          :ok <- validate_audience(claims, context),
-         :ok <- validate_expiration(claims) do
+         :ok <- validate_expiration(claims, context) do
       resource = Map.fetch!(context, :actor_resource)
       {:ok, claims, resource}
     else

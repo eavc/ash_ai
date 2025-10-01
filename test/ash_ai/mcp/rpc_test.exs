@@ -5,7 +5,7 @@ defmodule AshAi.Mcp.ServerTest do
   alias AshAi.Mcp.Router
   alias AshAi.Test.Music
 
-  @opts [tools: [:list_artists], otp_app: :ash_ai]
+  @opts [tools: [:list_artists], otp_app: :ash_ai, oauth_required?: false]
 
   describe "MCP RPC Protocol" do
     test "initialization creates a session" do
@@ -87,11 +87,12 @@ defmodule AshAi.Mcp.ServerTest do
       assert resp["jsonrpc"] == "2.0"
       assert resp["id"] == "2"
       assert resp["result"] != nil
-      assert resp["result"]["isError"] == false
-      assert %{"result" => %{"content" => [%{"type" => "text", "text" => text}]}} = resp
+      assert resp["result"]["type"] == "tool_result"
+      assert %{"result" => %{"content" => [%{"type" => _content_type, "data" => _data}]}} = resp
 
       # Check that our test artist is in the results
-      artists = Jason.decode!(text)
+      [content] = resp["result"]["content"]
+      artists = content["data"]
       assert Enum.any?(artists, fn a -> a["name"] == "Test Artist" end)
     end
   end
