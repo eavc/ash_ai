@@ -206,6 +206,9 @@ if Code.ensure_loaded?(Igniter) do
         else
           igniter
         end
+      else
+        # No router selected - return igniter to propagate partial work
+        igniter
       end
     end
 
@@ -461,6 +464,22 @@ if Code.ensure_loaded?(Igniter) do
     defp maybe_create_oauth_wrapper(
            igniter,
            module,
+           _otp_app,
+           nil,
+           _issuer,
+           _audience,
+           _alg,
+           _path
+         ) do
+      Igniter.add_issue(
+        igniter,
+        "Cannot generate OAuth wrapper #{inspect(module)} without --user. Provide a user resource module (e.g., --user MyApp.Accounts.User)."
+      )
+    end
+
+    defp maybe_create_oauth_wrapper(
+           igniter,
+           module,
            otp_app,
            user,
            issuer,
@@ -515,7 +534,12 @@ if Code.ensure_loaded?(Igniter) do
       env_guidance =
         if issuer do
           issuer_hint = "# Set MCP_ISSUER=#{inspect(issuer)}"
-          audience_hint = if audience, do: "\n  # Set MCP_RESOURCE_INDICATOR=#{inspect(audience)}", else: "\n  # Set MCP_RESOURCE_INDICATOR to your API identifier"
+
+          audience_hint =
+            if audience,
+              do: "\n  # Set MCP_RESOURCE_INDICATOR=#{inspect(audience)}",
+              else: "\n  # Set MCP_RESOURCE_INDICATOR to your API identifier"
+
           "\n  #{issuer_hint}#{audience_hint}"
         else
           ""
@@ -523,7 +547,7 @@ if Code.ensure_loaded?(Igniter) do
 
       issuer_lines =
         if issuer do
-          "\n      issuer: {:env!, \"MCP_ISSUER\"},\n      resource_indicator: {:env!, \"MCP_RESOURCE_INDICATOR\"},\n      algorithms: #{inspect(algorithms)}"
+          ",\n      issuer: {:env!, \"MCP_ISSUER\"},\n      resource_indicator: {:env!, \"MCP_RESOURCE_INDICATOR\"},\n      algorithms: #{inspect(algorithms)}"
         else
           ""
         end
@@ -571,7 +595,9 @@ if Code.ensure_loaded?(Igniter) do
         |> Module.concat(Helpers)
 
       """
-        @moduledoc \"""Project-specific MCP router wrapper.\"""
+        @moduledoc \"""
+        Project-specific MCP router wrapper.
+        \"""
 
         use AshAi.Mcp.PhoenixRouter,
           otp_app: :#{otp_app},
@@ -590,13 +616,17 @@ if Code.ensure_loaded?(Igniter) do
 
         alias #{routes_alias}, as: Routes
 
-        @doc \"""Augment tool metadata. Update to surface useful context for clients.\"""
+        @doc \"""
+        Augment tool metadata. Update to surface useful context for clients.
+        \"""
         def meta_builder(_context) do
           _ = Routes
           %{}
         end
 
-        @doc \"""Build resource links using Phoenix route helpers.\"""
+        @doc \"""
+        Build resource links using Phoenix route helpers.
+        \"""
         def resource_links(_tool, _data, _context) do
           _ = Routes
           # Example:
@@ -657,8 +687,8 @@ if Code.ensure_loaded?(Igniter) do
               ]
             else
               [
-                "  public_base_url: System.get_env(\"MCP_PUBLIC_URL\"),",
-                "  required_scopes: System.get_env(\"MCP_REQUIRED_SCOPES\"),",
+                "  public_base_url: System.fetch_env!(\"MCP_PUBLIC_URL\"),",
+                "  required_scopes: System.fetch_env!(\"MCP_REQUIRED_SCOPES\"),",
                 "  oauth_required?: true,"
               ]
             end
