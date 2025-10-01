@@ -616,26 +616,21 @@ if Code.ensure_loaded?(Igniter) do
            wrappers?,
            router_wrapper_module
          ) do
-      algorithms = parse_algorithms(alg)
+      # When using wrappers, all configuration is handled inside the wrapper module
+      if wrappers? && router_wrapper_module do
+        "forward \"/\", #{inspect(router_wrapper_module)}"
+      else
+        algorithms = parse_algorithms(alg)
 
-      base =
-        if wrappers? && router_wrapper_module do
-          ["forward \"/\", #{inspect(router_wrapper_module)}"]
-        else
-          [
-            "forward \"/\", AshAi.Mcp.Router,",
-            "  otp_app: :#{otp_app},",
-            "  resource_path: \"#{path}\","
-          ]
-        end
+        base = [
+          "forward \"/\", AshAi.Mcp.Router,",
+          "  otp_app: :#{otp_app},",
+          "  resource_path: \"#{path}\","
+        ]
 
-      oauth_lines =
-        if oauth? do
-          cond do
-            wrappers? && router_wrapper_module ->
-              []
-
-            issuer ->
+        oauth_lines =
+          if oauth? do
+            if issuer do
               auth_server =
                 String.trim_trailing(issuer, "/") <> "/.well-known/oauth-authorization-server"
 
@@ -647,38 +642,38 @@ if Code.ensure_loaded?(Igniter) do
                 "  required_scopes: System.fetch_env!(\"MCP_REQUIRED_SCOPES\"),",
                 "  oauth_required?: true,"
               ]
-
-            true ->
+            else
               [
                 "  public_base_url: System.get_env(\"MCP_PUBLIC_URL\"),",
                 "  required_scopes: System.get_env(\"MCP_REQUIRED_SCOPES\"),",
                 "  oauth_required?: true,"
               ]
+            end
+          else
+            [
+              "  public_base_url: System.get_env(\"MCP_PUBLIC_URL\"),",
+              "  required_scopes: System.get_env(\"MCP_REQUIRED_SCOPES\"),"
+            ]
           end
-        else
-          [
-            "  public_base_url: System.get_env(\"MCP_PUBLIC_URL\"),",
-            "  required_scopes: System.get_env(\"MCP_REQUIRED_SCOPES\"),"
-          ]
-        end
 
-      protocol_line =
-        if allow_legacy_protocol? do
-          ["  protocol_version_statement: \"2024-11-05\","]
-        else
-          []
-        end
+        protocol_line =
+          if allow_legacy_protocol? do
+            ["  protocol_version_statement: \"2024-11-05\","]
+          else
+            []
+          end
 
-      footer = [
-        "  # See documentation/topics/mcp_oauth.md for configuration guidance.",
-        "  tools: [",
-        "    # :tool1,",
-        "    # :tool2",
-        "  ]"
-      ]
+        footer = [
+          "  # See documentation/topics/mcp_oauth.md for configuration guidance.",
+          "  tools: [",
+          "    # :tool1,",
+          "    # :tool2",
+          "  ]"
+        ]
 
-      (base ++ oauth_lines ++ protocol_line ++ footer)
-      |> Enum.join("\n")
+        (base ++ oauth_lines ++ protocol_line ++ footer)
+        |> Enum.join("\n")
+      end
     end
   end
 else
