@@ -86,6 +86,7 @@ if Code.ensure_loaded?(Igniter) do
         schema: [
           oauth: :boolean,
           allow_legacy_protocol: :boolean,
+          wrappers: :boolean,
           user: :string,
           issuer: :string,
           audience: :string,
@@ -95,6 +96,7 @@ if Code.ensure_loaded?(Igniter) do
         defaults: [
           oauth: true,
           allow_legacy_protocol: false,
+          wrappers: false,
           path: "/mcp"
         ]
       }
@@ -104,6 +106,7 @@ if Code.ensure_loaded?(Igniter) do
     def igniter(igniter) do
       oauth? = Keyword.get(igniter.args.options, :oauth, true)
       allow_legacy_protocol? = Keyword.get(igniter.args.options, :allow_legacy_protocol, false)
+      wrappers? = Keyword.get(igniter.args.options, :wrappers, false)
       issuer = Keyword.get(igniter.args.options, :issuer)
       audience = Keyword.get(igniter.args.options, :audience)
       alg = Keyword.get(igniter.args.options, :alg, "RS256")
@@ -119,8 +122,30 @@ if Code.ensure_loaded?(Igniter) do
 
       {igniter, user} = user_module(igniter)
 
+      oauth_wrapper_module =
+        if wrappers? do
+          Igniter.Libs.Phoenix.web_module_name(igniter, "McpOAuthPlug")
+        end
+
+      router_wrapper_module =
+        if wrappers? do
+          Igniter.Libs.Phoenix.web_module_name(igniter, "McpRouter")
+        end
+
       {igniter, mcp_scope?} =
-        maybe_setup_oauth(igniter, router, oauth?, user, otp_app, issuer, audience, alg, path)
+        maybe_setup_oauth(
+          igniter,
+          router,
+          oauth?,
+          user,
+          otp_app,
+          issuer,
+          audience,
+          alg,
+          path,
+          wrappers?,
+          oauth_wrapper_module
+        )
 
       pipe_through =
         if mcp_scope? do
@@ -132,7 +157,16 @@ if Code.ensure_loaded?(Igniter) do
         endpoint = Enum.at(endpoints, 0)
 
         forward_block =
-          forward_body(otp_app, oauth?, issuer, alg, path, allow_legacy_protocol?)
+          forward_body(
+            otp_app,
+            oauth?,
+            issuer,
+            alg,
+            path,
+            allow_legacy_protocol?,
+            wrappers?,
+            router_wrapper_module
+          )
 
         igniter =
           Igniter.Libs.Phoenix.add_scope(
@@ -146,6 +180,23 @@ if Code.ensure_loaded?(Igniter) do
             router: router
           )
           |> add_plug_to_endpoint(endpoint, otp_app, path)
+
+        igniter =
+          if wrappers? do
+            igniter
+            |> maybe_create_oauth_wrapper(
+              oauth_wrapper_module,
+              otp_app,
+              user,
+              issuer,
+              audience,
+              alg,
+              path
+            )
+            |> maybe_create_router_wrapper(router_wrapper_module, otp_app, path)
+          else
+            igniter
+          end
 
         if allow_legacy_protocol? do
           Igniter.add_notice(
@@ -221,7 +272,19 @@ if Code.ensure_loaded?(Igniter) do
       end
     end
 
-    defp maybe_setup_oauth(igniter, router, true, user, otp_app, issuer, audience, alg, path) do
+    defp maybe_setup_oauth(
+           igniter,
+           router,
+           true,
+           user,
+           otp_app,
+           issuer,
+           audience,
+           alg,
+           path,
+           wrappers?,
+           oauth_wrapper_module
+         ) do
       cond do
         is_nil(router) ->
           {igniter, false}
@@ -241,7 +304,18 @@ if Code.ensure_loaded?(Igniter) do
               igniter
             end
 
-          setup_oauth_pipeline(igniter, router, user, otp_app, issuer, audience, alg, path)
+          setup_oauth_pipeline(
+            igniter,
+            router,
+            user,
+            otp_app,
+            issuer,
+            audience,
+            alg,
+            path,
+            wrappers?,
+            oauth_wrapper_module
+          )
       end
     end
 
@@ -254,7 +328,9 @@ if Code.ensure_loaded?(Igniter) do
            _issuer,
            _audience,
            _alg,
-           _path
+           _path,
+           _wrappers?,
+           _oauth_wrapper_module
          ) do
       igniter =
         Igniter.add_notice(
@@ -273,39 +349,44 @@ if Code.ensure_loaded?(Igniter) do
            issuer,
            audience,
            alg,
-           path
+           path,
+           wrappers?,
+           oauth_wrapper_module
          ) do
       algorithms = parse_algorithms(alg)
 
       pipeline_body =
-        if issuer do
-          # OIDC/JWKS setup with OidcJwksVerifier
-          """
-          plug AshAi.Mcp.Auth.OAuthBearerPlug,
-            otp_app: :#{otp_app},
-            verifier: &AshAi.Mcp.Auth.OidcJwksVerifier.verify/4,
-            verifier_context: [
-              issuer: System.fetch_env!("MCP_ISSUER"),
+        cond do
+          wrappers? && oauth_wrapper_module ->
+            "plug #{inspect(oauth_wrapper_module)}"
+
+          issuer ->
+            """
+            plug AshAi.Mcp.Auth.OAuthBearerPlug,
+              otp_app: :#{otp_app},
+              verifier: &AshAi.Mcp.Auth.OidcJwksVerifier.verify/4,
+              verifier_context: [
+                issuer: System.fetch_env!("MCP_ISSUER"),
+                resource_indicator: System.fetch_env!("MCP_RESOURCE_INDICATOR"),
+                actor_resource: #{inspect(user)},
+                algorithms: #{inspect(algorithms)}
+              ],
+              public_base_url: System.fetch_env!("MCP_PUBLIC_URL"),
+              resource_path: "#{path}",
               resource_indicator: System.fetch_env!("MCP_RESOURCE_INDICATOR"),
-              actor_resource: #{inspect(user)},
-              algorithms: #{inspect(algorithms)}
-            ],
-            public_base_url: System.fetch_env!("MCP_PUBLIC_URL"),
-            resource_path: "#{path}",
-            resource_indicator: System.fetch_env!("MCP_RESOURCE_INDICATOR"),
-            required_scopes: System.fetch_env!("MCP_REQUIRED_SCOPES"),
-            required?: true
-          """
-        else
-          # Default AshAuthentication JWT verification
-          """
-          plug AshAi.Mcp.Auth.OAuthBearerPlug,
-            otp_app: :#{otp_app},
-            public_base_url: System.fetch_env!("MCP_PUBLIC_URL"),
-            resource_path: "#{path}",
-            required_scopes: System.fetch_env!("MCP_REQUIRED_SCOPES"),
-            required?: true
-          """
+              required_scopes: System.fetch_env!("MCP_REQUIRED_SCOPES"),
+              required?: true
+            """
+
+          true ->
+            """
+            plug AshAi.Mcp.Auth.OAuthBearerPlug,
+              otp_app: :#{otp_app},
+              public_base_url: System.fetch_env!("MCP_PUBLIC_URL"),
+              resource_path: "#{path}",
+              required_scopes: System.fetch_env!("MCP_REQUIRED_SCOPES"),
+              required?: true
+            """
         end
 
       igniter =
@@ -317,44 +398,206 @@ if Code.ensure_loaded?(Igniter) do
         )
 
       igniter =
-        if issuer do
-          igniter
-          |> Igniter.add_notice("""
-          OAuth pipeline added for MCP with OIDC/JWKS verification.
-          Configure these environment variables:
-          - MCP_ISSUER=#{issuer}
-          - MCP_RESOURCE_INDICATOR=#{audience || "https://your-app.com/mcp"}
-          - MCP_PUBLIC_URL=https://your-app.com
-          - MCP_REQUIRED_SCOPES=\"mcp:access\"
+        cond do
+          wrappers? && oauth_wrapper_module ->
+            Igniter.add_notice(
+              igniter,
+              "OAuth pipeline configured using #{inspect(oauth_wrapper_module)}. Update the wrapper to fit your IdP and environment variables."
+            )
 
-          Also update the actor_resource in the pipeline to match your user resource.
-          See documentation/topics/mcp_oauth.md for more details.
-          """)
-          |> then(fn ign ->
-            if is_nil(audience) do
-              Igniter.add_notice(
-                ign,
-                "No --audience provided. Ensure MCP_RESOURCE_INDICATOR is set to your IdP API identifier to avoid audience mismatches."
-              )
-            else
-              ign
-            end
-          end)
-        else
-          Igniter.add_notice(
-            igniter,
-            """
-            OAuth pipeline added for MCP.
+          issuer ->
+            igniter
+            |> Igniter.add_notice("""
+            OAuth pipeline added for MCP with OIDC/JWKS verification.
             Configure these environment variables:
+            - MCP_ISSUER=#{issuer}
+            - MCP_RESOURCE_INDICATOR=#{audience || "https://your-app.com/mcp"}
             - MCP_PUBLIC_URL=https://your-app.com
-            - MCP_REQUIRED_SCOPES="mcp:access"
+            - MCP_REQUIRED_SCOPES=\"mcp:access\"
 
-            See documentation/topics/mcp_oauth.md for configuration guidance.
-            """
-          )
+            Also update the actor_resource in the pipeline to match your user resource.
+            See documentation/topics/mcp_oauth.md for more details.
+            """)
+            |> then(fn ign ->
+              if is_nil(audience) do
+                Igniter.add_notice(
+                  ign,
+                  "No --audience provided. Ensure MCP_RESOURCE_INDICATOR is set to your IdP API identifier to avoid audience mismatches."
+                )
+              else
+                ign
+              end
+            end)
+
+          true ->
+            Igniter.add_notice(
+              igniter,
+              """
+              OAuth pipeline added for MCP.
+              Configure these environment variables:
+              - MCP_PUBLIC_URL=https://your-app.com
+              - MCP_REQUIRED_SCOPES="mcp:access"
+
+              See documentation/topics/mcp_oauth.md for configuration guidance.
+              """
+            )
         end
 
       {igniter, true}
+    end
+
+    defp maybe_create_oauth_wrapper(
+           igniter,
+           nil,
+           _otp_app,
+           _user,
+           _issuer,
+           _audience,
+           _alg,
+           _path
+         ),
+         do: igniter
+
+    defp maybe_create_oauth_wrapper(
+           igniter,
+           module,
+           otp_app,
+           user,
+           issuer,
+           _audience,
+           alg,
+           path
+         ) do
+      {exists?, igniter} = Igniter.Project.Module.module_exists(igniter, module)
+
+      if exists? do
+        igniter
+      else
+        algorithms = parse_algorithms(alg)
+
+        body =
+          oauth_wrapper_body(
+            otp_app,
+            user,
+            issuer,
+            algorithms,
+            path
+          )
+
+        igniter
+        |> Igniter.Project.Module.create_module(module, body)
+        |> Igniter.add_notice(
+          "Created #{inspect(module)}. Update the wrapper to reflect your IdP scopes, issuer, and environment variables."
+        )
+      end
+    end
+
+    defp maybe_create_router_wrapper(igniter, nil, _otp_app, _path), do: igniter
+
+    defp maybe_create_router_wrapper(igniter, module, otp_app, path) do
+      {exists?, igniter} = Igniter.Project.Module.module_exists(igniter, module)
+
+      if exists? do
+        igniter
+      else
+        body = router_wrapper_body(module, otp_app, path)
+
+        igniter
+        |> Igniter.Project.Module.create_module(module, body)
+        |> Igniter.add_notice(
+          "Created #{inspect(module)}. Wire your exposed tools and update the resource/meta builders for Phoenix routes."
+        )
+      end
+    end
+
+    defp oauth_wrapper_body(otp_app, user, issuer, algorithms, path) do
+      issuer_lines =
+        if issuer do
+          "\n      issuer: {:env!, \"MCP_ISSUER\"},\n      resource_indicator: {:env!, \"MCP_RESOURCE_INDICATOR\"},\n      algorithms: #{inspect(algorithms)}"
+        else
+          ""
+        end
+
+      verifier_line =
+        if issuer do
+          ",\n    verifier: &AshAi.Mcp.Auth.OidcJwksVerifier.verify/4"
+        else
+          ""
+        end
+
+      """
+        @moduledoc \"""Project-specific OAuth plug wrapper for MCP traffic.\"""
+
+        use AshAi.Mcp.PhoenixOAuthPlug,
+          otp_app: :#{otp_app},
+          resource_path: "#{path}",
+          required?: true,
+          env: [
+            public_base_url: "MCP_PUBLIC_URL",
+            resource_indicator: "MCP_RESOURCE_INDICATOR",
+            required_scopes: "MCP_REQUIRED_SCOPES",
+            authorization_servers: "MCP_AUTHORIZATION_SERVERS",
+            www_authenticate_params: "MCP_WWW_AUTH_EXTRAS"
+          ],
+          verifier_context: [
+            actor_resource: #{inspect(user)}#{issuer_lines}
+          ]#{verifier_line}
+      """
+    end
+
+    defp router_wrapper_body(module, otp_app, path) do
+      base_module =
+        module
+        |> Module.split()
+        |> Enum.drop(-1)
+        |> Module.concat()
+
+      routes_alias =
+        base_module
+        |> Module.concat(Router)
+        |> Module.concat(Helpers)
+
+      """
+        @moduledoc \"""Project-specific MCP router wrapper.\"""
+
+        use AshAi.Mcp.PhoenixRouter,
+          otp_app: :#{otp_app},
+          path: "#{path}",
+          env: [
+            public_base_url: "MCP_PUBLIC_URL",
+            resource_indicator: "MCP_RESOURCE_INDICATOR",
+            required_scopes: "MCP_REQUIRED_SCOPES",
+            authorization_servers: "MCP_AUTHORIZATION_SERVERS"
+          ],
+          tools: [
+            # :tool_name
+          ],
+          meta_builder: &__MODULE__.meta_builder/1,
+          resource_link_builder: &__MODULE__.resource_links/3
+
+        alias #{routes_alias}, as: Routes
+
+        @doc \"""Augment tool metadata. Update to surface useful context for clients.\"""
+        def meta_builder(_context) do
+          _ = Routes
+          %{}
+        end
+
+        @doc \"""Build resource links using Phoenix route helpers.\"""
+        def resource_links(_tool, _data, _context) do
+          _ = Routes
+          # Example:
+          # Enum.map(List.wrap(_data), fn %{"id" => id} ->
+          #   %{
+          #     "href" => Routes.post_url(MyAppWeb.Endpoint, :show, id),
+          #     "title" => "Post",
+          #     "type" => "application/vnd.api+json",
+          #     "_meta" => %{"rel" => "item"}
+          #   }
+          # end)
+          []
+        end
+      """
     end
 
     defp parse_algorithms(alg_string) do
@@ -363,37 +606,54 @@ if Code.ensure_loaded?(Igniter) do
       |> Enum.map(&String.trim/1)
     end
 
-    defp forward_body(otp_app, oauth?, issuer, alg, path, allow_legacy_protocol?) do
+    defp forward_body(
+           otp_app,
+           oauth?,
+           issuer,
+           alg,
+           path,
+           allow_legacy_protocol?,
+           wrappers?,
+           router_wrapper_module
+         ) do
       algorithms = parse_algorithms(alg)
 
-      base = [
-        "forward \"/\", AshAi.Mcp.Router,",
-        "  otp_app: :#{otp_app},",
-        "  resource_path: \"#{path}\","
-      ]
+      base =
+        if wrappers? && router_wrapper_module do
+          ["forward \"/\", #{inspect(router_wrapper_module)}"]
+        else
+          [
+            "forward \"/\", AshAi.Mcp.Router,",
+            "  otp_app: :#{otp_app},",
+            "  resource_path: \"#{path}\","
+          ]
+        end
 
       oauth_lines =
         if oauth? do
-          if issuer do
-            # OIDC/JWKS configuration with authorization_servers
-            auth_server =
-              String.trim_trailing(issuer, "/") <> "/.well-known/oauth-authorization-server"
+          cond do
+            wrappers? && router_wrapper_module ->
+              []
 
-            [
-              "  public_base_url: System.fetch_env!(\"MCP_PUBLIC_URL\"),",
-              "  resource_indicator: System.fetch_env!(\"MCP_RESOURCE_INDICATOR\"),",
-              "  authorization_servers: [\"#{auth_server}\"],",
-              "  resource_signing_algorithms_supported: #{inspect(algorithms)},",
-              "  required_scopes: System.fetch_env!(\"MCP_REQUIRED_SCOPES\"),",
-              "  oauth_required?: true,"
-            ]
-          else
-            # Default configuration
-            [
-              "  public_base_url: System.get_env(\"MCP_PUBLIC_URL\"),",
-              "  required_scopes: System.get_env(\"MCP_REQUIRED_SCOPES\"),",
-              "  oauth_required?: true,"
-            ]
+            issuer ->
+              auth_server =
+                String.trim_trailing(issuer, "/") <> "/.well-known/oauth-authorization-server"
+
+              [
+                "  public_base_url: System.fetch_env!(\"MCP_PUBLIC_URL\"),",
+                "  resource_indicator: System.fetch_env!(\"MCP_RESOURCE_INDICATOR\"),",
+                "  authorization_servers: [\"#{auth_server}\"],",
+                "  resource_signing_algorithms_supported: #{inspect(algorithms)},",
+                "  required_scopes: System.fetch_env!(\"MCP_REQUIRED_SCOPES\"),",
+                "  oauth_required?: true,"
+              ]
+
+            true ->
+              [
+                "  public_base_url: System.get_env(\"MCP_PUBLIC_URL\"),",
+                "  required_scopes: System.get_env(\"MCP_REQUIRED_SCOPES\"),",
+                "  oauth_required?: true,"
+              ]
           end
         else
           [
