@@ -381,7 +381,10 @@ defmodule AshAi.Mcp.Auth.JwksCache do
     |> Enum.find(fn {name, _value} -> String.downcase(name) == "cache-control" end)
     |> case do
       {_name, value} ->
-        case Regex.run(~r/max-age=(\d+)/i, value) do
+        # Handle both string and list values (some HTTP clients return lists)
+        value_str = value |> List.wrap() |> List.first() || ""
+
+        case Regex.run(~r/max-age=(\d+)/i, value_str) do
           [_, seconds] -> String.to_integer(seconds)
           _ -> @default_cache_ttl_seconds
         end
