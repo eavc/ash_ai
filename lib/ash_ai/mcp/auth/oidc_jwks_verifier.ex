@@ -74,8 +74,14 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   The `resource` returned is the `actor_resource` from the context, which
   the plug uses for subject resolution.
   """
-  @spec verify(String.t(), any(), keyword(), map()) ::
+  @spec verify(String.t(), any(), keyword(), map() | keyword()) ::
           {:ok, map(), module()} | :error
+
+  # Accept keyword list and convert to map
+  def verify(token, target, opts, context) when is_list(context) do
+    verify(token, target, opts, Map.new(context))
+  end
+
   def verify(token, _target, _opts, context) when is_map(context) do
     context = normalize_context(context)
 
