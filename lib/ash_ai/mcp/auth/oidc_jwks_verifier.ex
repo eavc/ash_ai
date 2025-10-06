@@ -86,6 +86,7 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     context = normalize_context(context)
 
     with {:ok, header} <- decode_header(token),
+         _ <- Logger.debug("JWT header: #{inspect(header)}"),
          {:ok, kid} <- extract_kid(header),
          {:ok, alg} <- extract_alg(header),
          :ok <- validate_algorithm(alg, context),
