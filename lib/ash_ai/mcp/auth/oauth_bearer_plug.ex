@@ -103,6 +103,9 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
   @impl Plug
   def call(%Plug.Conn{request_path: @metadata_path} = conn, _opts), do: conn
 
+  @impl Plug
+  def call(%Plug.Conn{method: "OPTIONS"} = conn, _opts), do: conn
+
   def call(conn, init_opts) do
     router_opts = conn.assigns[:router_opts] || []
     options = build_options(init_opts, router_opts, conn)
