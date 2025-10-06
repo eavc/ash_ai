@@ -19,6 +19,23 @@ if Code.ensure_loaded?(Plug) do
 
     @protocol_header "mcp-protocol-version"
 
+    # CORS support for browser-based MCP clients (e.g., MCP Inspector)
+    # Only enabled if Corsica is available
+    if Code.ensure_loaded?(Corsica) do
+      plug(Corsica,
+        origins: "*",
+        allow_methods: ["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers: [
+          "content-type",
+          "authorization",
+          "mcp-protocol-version",
+          "mcp-session-id"
+        ],
+        expose_headers: ["mcp-protocol-version", "www-authenticate"],
+        max_age: 3600
+      )
+    end
+
     # Discovery metadata must remain publicly readable so clients can learn how to
     # authenticate before negotiating the MCP session.
     plug(AshAi.Mcp.Auth.ResourceMetadata)
