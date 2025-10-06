@@ -83,6 +83,7 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
   alias AshAi.Mcp.Auth.Scope
   alias AshAi.Mcp.Server
   alias AshAuthentication
+  require Logger
 
   import Plug.Conn
 
@@ -222,9 +223,11 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
   defp fetch_bearer_token(conn, %{required?: required?}) do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token | _] ->
+        Logger.debug("Received Bearer token (first 50 chars): #{String.slice(token, 0, 50)}...")
         {:ok, token}
 
       ["bearer " <> token | _] ->
+        Logger.debug("Received bearer token (first 50 chars): #{String.slice(token, 0, 50)}...")
         {:ok, token}
 
       [_ | _] ->
