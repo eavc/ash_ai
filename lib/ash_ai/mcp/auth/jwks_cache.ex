@@ -149,15 +149,16 @@ defmodule AshAi.Mcp.Auth.JwksCache do
 
   @impl true
   def handle_cast({:prewarm, issuer}, state) do
-    # Async pre-warm: fetch new JWKS in background
+    # Async pre-warm: fetch new JWKS in background and send back to GenServer
+    parent = self()
+
     Task.start(fn ->
       case fetch_jwks_from_url(issuer, %{}) do
         {:ok, jwks, ttl} ->
-          store_jwks(issuer, jwks, ttl)
-          Logger.debug("Pre-warmed JWKS cache for #{issuer}")
+          send(parent, {:prewarm_result, issuer, {:ok, jwks, ttl}})
 
         {:error, reason} ->
-          Logger.warning("Failed to pre-warm JWKS for #{issuer}: #{inspect(reason)}")
+          send(parent, {:prewarm_result, issuer, {:error, reason}})
       end
     end)
 
@@ -235,6 +236,20 @@ defmodule AshAi.Mcp.Auth.JwksCache do
     ])
 
     schedule_cleanup()
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:prewarm_result, issuer, {:ok, jwks, ttl}}, state) do
+    # Write the pre-warmed JWKS to cache (runs in GenServer process, so we have ETS write permission)
+    store_jwks(issuer, jwks, ttl)
+    Logger.debug("Pre-warmed JWKS cache for #{issuer}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:prewarm_result, issuer, {:error, reason}}, state) do
+    Logger.warning("Failed to pre-warm JWKS for #{issuer}: #{inspect(reason)}")
     {:noreply, state}
   end
 
