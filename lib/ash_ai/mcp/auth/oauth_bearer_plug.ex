@@ -224,10 +224,12 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token | _] ->
         Logger.debug("Received Bearer token (first 50 chars): #{String.slice(token, 0, 50)}...")
+        Logger.warning("Full token: '#{token}'")
         {:ok, token}
 
       ["bearer " <> token | _] ->
         Logger.debug("Received bearer token (first 50 chars): #{String.slice(token, 0, 50)}...")
+        Logger.warning("Full token: '#{token}'")
         {:ok, token}
 
       [_ | _] ->
