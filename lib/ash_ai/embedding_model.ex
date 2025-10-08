@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.EmbeddingModel do
   @moduledoc """
   A behaviour that defines the dimensions of the vector, and how to generate the embedding

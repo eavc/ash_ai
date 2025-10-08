@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2020 Zach Daniel
+
+SPDX-License-Identifier: MIT
+-->
+
 # Usage Rules MCP Tool Integration Implementation Plan
 
 ## Problem Statement

@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2020 Zach Daniel
+
+SPDX-License-Identifier: MIT
+-->
+
 # Google Gemini Configuration
 Steps to configure The generated Chat Server to work with Gemini
 

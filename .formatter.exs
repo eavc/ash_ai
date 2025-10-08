@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 spark_locals_without_parens = [
   action_parameters: 1,
   ash_oban_trigger_name: 1,

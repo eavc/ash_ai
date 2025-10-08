@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Actions.Prompt.Adapter.StructuredOutput do
   @moduledoc """
   An adapter for prompt-backed actions that leverages structured output from LLMs.

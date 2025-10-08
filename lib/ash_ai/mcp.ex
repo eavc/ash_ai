@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Mcp do
   @moduledoc """
   Model Context Protocol (MCP) implementation for Ash Framework.

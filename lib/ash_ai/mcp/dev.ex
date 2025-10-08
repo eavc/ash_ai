@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Mcp.Dev do
   @moduledoc """
   Place in your endpoint's code_reloading section to expose Ash dev MCP"

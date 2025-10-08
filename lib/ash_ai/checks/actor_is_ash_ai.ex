@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Checks.ActorIsAshAi do
   @moduledoc "A check that is true when the actor is `%AshAi{}`"
   use Ash.Policy.SimpleCheck

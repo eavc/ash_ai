@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Test.LangChainHelpers do
   @moduledoc """
   Helper function for handling LangChain version compatibility in tests.

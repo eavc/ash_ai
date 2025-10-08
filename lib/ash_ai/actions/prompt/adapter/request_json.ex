@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Actions.Prompt.Adapter.RequestJson do
   @moduledoc """
   This adapter is designed for LLMs that don't support native tool calling or structured outputs.

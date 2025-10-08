@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.ChatFaker do
   @moduledoc false
   @behaviour LangChain.ChatModels.ChatModel

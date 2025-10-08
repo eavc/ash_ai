@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Actions.Prompt.Adapter.CompletionTool do
   @moduledoc """
   An adapter that provides a "complete_request" tool that the LLM must call within `max_runs` messages to complete the request.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 if Code.ensure_loaded?(AshOban) do
   defmodule AshAi.Changes.VectorizeAfterActionObanTrigger do
     @moduledoc "Run an ash_oban trigger when embeddings need to be regenerated."

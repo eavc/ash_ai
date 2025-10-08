@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Mcp.ServerTest do
   use AshAi.RepoCase, async: false
   import Plug.{Conn, Test}

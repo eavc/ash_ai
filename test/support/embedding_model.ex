@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Test.EmbeddingModel do
   @moduledoc false
   use AshAi.EmbeddingModel

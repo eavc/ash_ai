@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Changes.Vectorize do
   @moduledoc """
   A change that vectorizes the current values of attributes for a given record.

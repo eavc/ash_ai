@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Actions.Prompt.Adapter do
   @moduledoc """
   Behavior for prompt-backed-action adapters.

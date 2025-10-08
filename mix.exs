@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.MixProject do
   use Mix.Project
 
@@ -127,9 +131,10 @@ defmodule AshAi.MixProject do
 
   defp package do
     [
-      name: :ash_ai,
+      maintainers: [
+        "Zach Daniel <zach@zachdaniel.dev>"
+      ],
       licenses: ["MIT"],
-      maintainers: "Zach Daniel",
       files: ~w(lib .formatter.exs mix.exs README* LICENSE* usage-rules.md
       CHANGELOG* documentation),
       links: %{
@@ -137,7 +142,8 @@ defmodule AshAi.MixProject do
         "Discord" => "https://discord.gg/HTHRaaVPUc",
         "Website" => "https://ash-hq.org",
         "Forum" => "https://elixirforum.com/c/ash-framework-forum/",
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
+        "REUSE Compliance" => "https://api.reuse.software/info/github.com/ash-project/ash_ai"
       }
     ]
   end

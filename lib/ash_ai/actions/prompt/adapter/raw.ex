@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Actions.Prompt.Adapter.Raw do
   @moduledoc """
   An adapter for prompt-backed actions that returns the raw llm response

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Actions.Prompt do
   @prompt_template {"""
                     You are responsible for performing the `<%= @input.action.name %>` action.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Validations.ActorIsAshAi do
   @moduledoc "A validation that passes if the actor is `%AshAi{}`"
 

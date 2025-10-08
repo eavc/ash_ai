@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Actions.Prompt.Adapter.Helpers do
   @moduledoc """
   Helpers for processing `LangChain.PromptTemplate`s in messages.

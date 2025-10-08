@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 Postgrex.Types.define(
   AshAi.PostgrexTypes,
   [AshPostgres.Extensions.Vector] ++ Ecto.Adapters.Postgres.extensions(),

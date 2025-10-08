@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Zach Daniel
+#
+# SPDX-License-Identifier: MIT
+
 defmodule AshAi.Test.Music do
   @moduledoc false
   use Ash.Domain, otp_app: :ash_ai, extensions: [AshAi]
