@@ -66,6 +66,23 @@ defmodule AshAi.Mcp.Auth.ScopeTest do
       claims = %{"scope" => "  read   write  "}
       assert Scope.scopes_from_claims(claims) == ["read", "write"]
     end
+
+    test "extracts from permissions when present (Auth0 RFC 9068)" do
+      claims = %{"permissions" => ["mcp:access", "ledger:read"]}
+      assert Scope.scopes_from_claims(claims) == ["mcp:access", "ledger:read"]
+    end
+
+    test "merges scope and permissions; ignores scp when scope present" do
+      claims = %{
+        "scope" => "read,write",
+        "scp" => ["admin"],
+        "permissions" => ["mcp:access", :"ledger:read"]
+      }
+
+      scopes = Scope.scopes_from_claims(claims)
+
+      assert Enum.sort(scopes) == Enum.sort(["read", "write", "mcp:access", "ledger:read"])
+    end
   end
 
   describe "missing_scopes/2" do
