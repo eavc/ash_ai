@@ -137,6 +137,20 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     actor_resource = fetch.(context, :actor_resource)
     jwks_overrides = fetch.(context, :jwks_overrides) || %{}
     clock_skew_seconds = fetch.(context, :clock_skew_seconds) || 30
+    workos_client_id = fetch.(context, :workos_client_id) || fetch_workos_client_id()
+
+    enforce_resource_audience? =
+      case fetch.(context, :enforce_resource_audience?) do
+        nil ->
+          # WorkOS AuthKit currently issues access tokens with aud=client_id while
+          # RFC 8707 resource indicators are still rolling out. We default to
+          # skipping audience enforcement for AuthKit issuers to avoid rejecting
+          # valid tokens, but allow callers to opt back in when providers comply.
+          not workos_issuer?(issuers)
+
+        value ->
+          truthy?(value)
+      end
 
     %{
       issuers: issuers,
@@ -144,7 +158,9 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
       resource_indicator: resource_indicator,
       actor_resource: actor_resource,
       jwks_overrides: jwks_overrides,
-      clock_skew_seconds: clock_skew_seconds
+      clock_skew_seconds: clock_skew_seconds,
+      workos_client_id: workos_client_id,
+      enforce_resource_audience?: enforce_resource_audience?
     }
   end
 
@@ -255,6 +271,8 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     end
   end
 
+  defp validate_audience(_claims, %{enforce_resource_audience?: false}), do: :ok
+
   defp validate_audience(claims, context) do
     expected_aud = Map.get(context, :resource_indicator)
     claim_aud = claims |> Map.get("aud") |> List.wrap()
@@ -325,6 +343,34 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   end
 
   defp stringify_keys(value), do: value
+
+  defp truthy?(value) when is_boolean(value), do: value
+  defp truthy?(value) when is_binary(value), do: String.downcase(value) not in ["", "false", "0"]
+  defp truthy?(value) when is_integer(value), do: value != 0
+  defp truthy?(value) when is_nil(value), do: false
+  defp truthy?(_value), do: true
+
+  defp workos_issuer?(issuers) when is_list(issuers) do
+    Enum.any?(issuers, fn
+      issuer when is_binary(issuer) ->
+        issuer
+        |> URI.parse()
+        |> Map.get(:host)
+        |> case do
+          nil -> false
+          host -> String.ends_with?(host, ".authkit.app")
+        end
+
+      _ ->
+        false
+    end)
+  end
+
+  defp workos_issuer?(_), do: false
+
+  defp fetch_workos_client_id do
+    System.get_env("WORKOS_MCP_CLIENT_ID") || System.get_env("WORKOS_CLIENT_ID")
+  end
 
   defp refetch_and_verify(token, context, issuer, kid) do
     with {:ok, jwks} <- JwksCache.get_jwks(issuer, context),

@@ -307,8 +307,8 @@ defmodule AshAi.Mcp.Auth.JwksCache do
   defp fetch_jwks_from_url(issuer, context) do
     # Validate issuer URL to prevent SSRF
     with :ok <- validate_issuer_url(issuer),
-         jwks_url <- build_jwks_url(issuer),
-         {:ok, jwks, ttl} <- do_fetch_jwks(jwks_url, context) do
+         {jwks_url, cache_key} <- build_jwks_url(issuer, context),
+         {:ok, jwks, ttl} <- do_fetch_jwks(jwks_url, context, cache_key) do
       {:ok, jwks, ttl}
     else
       {:error, _reason} = error -> error
@@ -352,16 +352,33 @@ defmodule AshAi.Mcp.Auth.JwksCache do
     end
   end
 
-  defp build_jwks_url(issuer) do
-    "#{issuer}/.well-known/jwks.json"
+  defp build_jwks_url(issuer, context) do
+    issuer_host =
+      issuer
+      |> URI.parse()
+      |> Map.get(:host)
+
+    workos_client_id =
+      Map.get(context, :workos_client_id) ||
+        System.get_env("WORKOS_MCP_CLIENT_ID") ||
+        System.get_env("WORKOS_CLIENT_ID")
+
+    if issuer_host && String.ends_with?(issuer_host, ".authkit.app") &&
+         is_binary(workos_client_id) do
+      # WorkOS AuthKit serves JWKS from the WorkOS API instead of the issuer host.
+      # We keep caching mapped to the original issuer so existing callers do not need
+      # special handling.
+      {"https://api.workos.com/sso/jwks/#{workos_client_id}", issuer}
+    else
+      {"#{issuer}/.well-known/jwks.json", issuer}
+    end
   end
 
-  defp do_fetch_jwks(jwks_url, context) do
+  defp do_fetch_jwks(jwks_url, context, cache_key) do
     # Check for test override
-    issuer = jwks_url |> String.replace("/.well-known/jwks.json", "")
     overrides = Map.get(context, :jwks_overrides, %{})
 
-    if jwks = Map.get(overrides, issuer) do
+    if jwks = Map.get(overrides, cache_key) do
       {:ok, jwks, @default_cache_ttl_seconds}
     else
       case Req.get(url: jwks_url, max_retries: 2, retry_delay: 100) do
