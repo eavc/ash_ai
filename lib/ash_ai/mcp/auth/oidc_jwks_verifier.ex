@@ -83,29 +83,54 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   end
 
   def verify(token, _target, _opts, context) when is_map(context) do
+    Logger.info("🔐 Starting token verification")
     context = normalize_context(context)
+    Logger.debug("Normalized context: #{inspect(Map.drop(context, [:actor_resource]))}")
 
     with {:ok, header} <- decode_header(token),
-         _ <- Logger.debug("JWT header: #{inspect(header)}"),
+         _ <- Logger.debug("✅ JWT header decoded: #{inspect(header)}"),
          {:ok, kid} <- extract_kid(header),
+         _ <- Logger.debug("✅ Extracted kid: #{kid}"),
          {:ok, alg} <- extract_alg(header),
+         _ <- Logger.debug("✅ Extracted algorithm: #{alg}"),
          :ok <- validate_algorithm(alg, context),
+         _ <- Logger.debug("✅ Algorithm validated"),
          {:ok, {issuer, jwks}} <- fetch_jwks_for_kid(context, kid),
-         {:ok, jwk} <- find_key(jwks, kid) do
+         _ <- Logger.debug("✅ Fetched JWKS from issuer: #{issuer}"),
+         {:ok, jwk} <- find_key(jwks, kid),
+         _ <- Logger.debug("✅ Found JWK for kid: #{kid}") do
+      Logger.debug("🔑 Verifying signature...")
+
       case verify_signature_strict(token, jwk, context) do
         {:ok, claims} ->
+          Logger.debug("✅ Signature verified successfully")
+          Logger.debug("Token claims: #{inspect(claims)}")
+
           with :ok <- validate_issuer(claims, context),
+               _ <- Logger.debug("✅ Issuer validated"),
                :ok <- validate_audience(claims, context),
-               :ok <- validate_expiration(claims, context) do
+               _ <- Logger.debug("✅ Audience validated"),
+               :ok <- validate_expiration(claims, context),
+               _ <- Logger.debug("✅ Expiration validated") do
             resource = Map.fetch!(context, :actor_resource)
+            Logger.info("🎉 Token verification successful for subject: #{claims["sub"]}")
             {:ok, claims, resource}
           else
-            _ -> :error
+            {:error, reason} ->
+              Logger.warning("❌ Token validation failed: #{inspect(reason)}")
+              :error
+
+            other ->
+              Logger.warning(
+                "❌ Token validation failed with unexpected result: #{inspect(other)}"
+              )
+
+              :error
           end
 
-        {:error, _} ->
-          Logger.debug(
-            "Signature verification failed. Forcing JWKS refresh for #{issuer} kid=#{kid}"
+        {:error, reason} ->
+          Logger.warning(
+            "❌ Signature verification failed: #{inspect(reason)}. Forcing JWKS refresh for #{issuer} kid=#{kid}"
           )
 
           JwksCache.force_refresh(issuer)
@@ -113,10 +138,11 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
       end
     else
       {:error, reason} ->
-        Logger.debug("Token verification failed: #{inspect(reason)}")
+        Logger.warning("❌ Token verification failed at step: #{inspect(reason)}")
         :error
 
       :error ->
+        Logger.warning("❌ Token verification failed with unknown reason")
         :error
     end
   end
@@ -264,22 +290,31 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     claim_iss = Map.get(claims, "iss") |> normalize_issuer()
     normalized = Enum.map(issuers, &normalize_issuer/1)
 
+    Logger.debug("Validating issuer: claim='#{claim_iss}', allowed=#{inspect(normalized)}")
+
     if claim_iss in normalized do
       :ok
     else
+      Logger.warning("❌ Invalid issuer: '#{claim_iss}' not in #{inspect(normalized)}")
       {:error, :invalid_issuer}
     end
   end
 
-  defp validate_audience(_claims, %{enforce_resource_audience?: false}), do: :ok
+  defp validate_audience(_claims, %{enforce_resource_audience?: false}) do
+    Logger.debug("Audience validation skipped (enforce_resource_audience? = false)")
+    :ok
+  end
 
   defp validate_audience(claims, context) do
     expected_aud = Map.get(context, :resource_indicator)
     claim_aud = claims |> Map.get("aud") |> List.wrap()
 
+    Logger.debug("Validating audience: expected='#{expected_aud}', claim=#{inspect(claim_aud)}")
+
     if expected_aud in claim_aud do
       :ok
     else
+      Logger.warning("❌ Invalid audience: '#{expected_aud}' not in #{inspect(claim_aud)}")
       {:error, :invalid_audience}
     end
   end
@@ -287,6 +322,8 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   defp validate_expiration(claims, context) do
     now = System.system_time(:second)
     skew = Map.get(context, :clock_skew_seconds, 30)
+
+    Logger.debug("Validating expiration: now=#{now}, skew=#{skew}s")
 
     with :ok <- check_exp(claims, now, skew) do
       check_nbf(claims, now, skew)
@@ -296,16 +333,22 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   defp check_exp(claims, now, skew) do
     case Map.get(claims, "exp") do
       nil ->
+        Logger.warning("❌ Token missing 'exp' claim")
         {:error, :missing_exp}
 
       exp when is_integer(exp) ->
+        expires_in = exp - now
+        Logger.debug("Token expiration: exp=#{exp}, expires_in=#{expires_in}s")
+
         if exp > now - skew do
           :ok
         else
+          Logger.warning("❌ Token expired: exp=#{exp}, now=#{now}, expired #{now - exp}s ago")
           {:error, :token_expired}
         end
 
-      _ ->
+      exp ->
+        Logger.warning("❌ Invalid 'exp' claim type: #{inspect(exp)}")
         {:error, :invalid_exp}
     end
   end

@@ -108,14 +108,26 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
   def call(%Plug.Conn{method: "OPTIONS"} = conn, _opts), do: conn
 
   def call(conn, init_opts) do
+    Logger.info("🔌 OAuth Bearer Plug called for #{conn.method} #{conn.request_path}")
     router_opts = conn.assigns[:router_opts] || []
     options = build_options(init_opts, router_opts, conn)
 
+    Logger.debug(
+      "OAuth options: required_scopes=#{inspect(options[:required_scopes])}, resource_indicator=#{options[:resource_indicator]}"
+    )
+
     with {:ok, token} <- fetch_bearer_token(conn, options),
+         _ <- Logger.debug("✅ Bearer token extracted"),
          {:ok, claims, resource} <- verify_token(token, options),
+         _ <- Logger.debug("✅ Token verified, subject=#{claims["sub"]}"),
          :ok <- validate_resource_indicator(claims, options),
+         _ <- Logger.debug("✅ Resource indicator validated"),
          :ok <- validate_scopes(claims, options),
-         {:ok, actor} <- resolve_actor(claims, resource, options) do
+         _ <- Logger.debug("✅ Scopes validated"),
+         {:ok, actor} <- resolve_actor(claims, resource, options),
+         _ <- Logger.info("✅ Actor resolved: #{inspect(actor.id)}") do
+      Logger.info("🎉 OAuth authentication successful")
+
       conn
       |> maybe_put_tenant(claims)
       |> put_oauth_context(claims)
@@ -123,9 +135,11 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
       |> assign(:oauth_claims, claims)
     else
       :skip ->
+        Logger.debug("OAuth authentication skipped (not required)")
         conn
 
       {:error, status, error_code, reason, description, attrs} ->
+        Logger.warning("❌ OAuth authentication failed: #{error_code} - #{reason}")
         respond_with_error(conn, options, status, error_code, reason, description, attrs)
     end
   end
@@ -265,35 +279,57 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
     end
   end
 
-  defp validate_resource_indicator(_claims, %{resource_indicator: nil}), do: :ok
-
   defp validate_resource_indicator(claims, %{resource_indicator: indicator} = opts) do
-    audiences =
-      claims
-      |> Map.get("aud")
-      |> List.wrap()
-      |> Enum.map(&to_string/1)
-
-    if indicator in audiences do
+    if is_nil(indicator) do
+      Logger.debug("Resource indicator validation skipped (resource_indicator = nil)")
       :ok
     else
-      emit_audience_mismatch(opts, audiences)
+      enforce? = enforce_resource_indicator?(opts)
+      Logger.debug("enforce_resource_indicator? returned: #{inspect(enforce?)}")
 
-      {:error, 401, "invalid_scope", "invalid_resource_indicator",
-       "Token audience does not match required resource indicator", []}
+      if enforce? == false do
+        Logger.debug("Resource indicator validation skipped (enforce_resource_audience? = false)")
+        :ok
+      else
+        audiences =
+          claims
+          |> Map.get("aud")
+          |> List.wrap()
+          |> Enum.map(&to_string/1)
+
+        Logger.debug(
+          "Validating resource indicator: expected='#{indicator}', audiences=#{inspect(audiences)}"
+        )
+
+        if indicator in audiences do
+          :ok
+        else
+          Logger.warning("❌ Resource indicator '#{indicator}' not found in audiences")
+          emit_audience_mismatch(opts, audiences)
+
+          {:error, 401, "invalid_scope", "invalid_resource_indicator",
+           "Token audience does not match required resource indicator", []}
+        end
+      end
     end
   end
 
-  defp validate_scopes(_claims, %{required_scopes: []}), do: :ok
+  defp validate_scopes(_claims, %{required_scopes: []}) do
+    Logger.debug("Scope validation skipped (no required scopes)")
+    :ok
+  end
 
   defp validate_scopes(claims, %{required_scopes: required} = opts) do
     granted = Scope.scopes_from_claims(claims)
+
+    Logger.debug("Validating scopes: required=#{inspect(required)}, granted=#{inspect(granted)}")
 
     case Scope.missing_scopes(required, granted) do
       [] ->
         :ok
 
       missing ->
+        Logger.warning("❌ Missing required scopes: #{inspect(missing)}")
         emit_insufficient_scope(opts, required, missing, granted)
 
         {:error, 403, "insufficient_scope", "insufficient_scope",
@@ -304,8 +340,13 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
 
   defp resolve_actor(claims, resource, %{subject_resolver: resolver} = opts) do
     case claims["sub"] do
-      nil -> {:error, 401, "invalid_token", "missing_subject", "Token missing subject", []}
-      subject -> resolver.(subject, resource, resolver_opts(opts, claims))
+      nil ->
+        Logger.warning("❌ Token missing 'sub' claim")
+        {:error, 401, "invalid_token", "missing_subject", "Token missing subject", []}
+
+      subject ->
+        Logger.debug("Resolving subject '#{subject}' to actor using #{inspect(resource)}")
+        resolver.(subject, resource, resolver_opts(opts, claims))
     end
   end
 
@@ -351,6 +392,85 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
   end
 
   defp stringify_keys(value), do: value
+
+  defp enforce_resource_indicator?(opts) do
+    context =
+      opts
+      |> Map.get(:verifier_context, %{})
+      |> case do
+        list when is_list(list) -> Map.new(list)
+        map -> map
+      end
+
+    Logger.debug("enforce_resource_indicator? checking context: #{inspect(Map.keys(context))}")
+
+    value =
+      Map.get(context, :enforce_resource_audience?) ||
+        Map.get(context, "enforce_resource_audience?")
+
+    Logger.debug("enforce_resource_audience? value from context: #{inspect(value)}")
+
+    result =
+      case normalize_boolean(value) do
+        nil ->
+          # If not explicitly set, check if this is a WorkOS issuer
+          issuers =
+            (Map.get(context, :issuers) || Map.get(context, "issuers") || [])
+            |> List.wrap()
+
+          issuer = Map.get(context, :issuer) || Map.get(context, "issuer")
+          all_issuers = (issuers ++ List.wrap(issuer)) |> Enum.reject(&is_nil/1)
+
+          Logger.debug(
+            "No explicit enforce_resource_audience? value, checking issuers: #{inspect(all_issuers)}"
+          )
+
+          # Default to true unless we detect a WorkOS issuer
+          is_workos = workos_issuer?(all_issuers)
+          Logger.debug("Is WorkOS issuer? #{inspect(is_workos)}")
+          not is_workos
+
+        bool ->
+          bool
+      end
+
+    Logger.debug("enforce_resource_indicator? final result: #{inspect(result)}")
+    result
+  end
+
+  defp workos_issuer?(issuers) when is_list(issuers) do
+    Enum.any?(issuers, fn
+      issuer when is_binary(issuer) ->
+        issuer
+        |> URI.parse()
+        |> Map.get(:host)
+        |> case do
+          nil -> false
+          host -> String.ends_with?(host, ".authkit.app")
+        end
+
+      _ ->
+        false
+    end)
+  end
+
+  defp workos_issuer?(_), do: false
+
+  defp normalize_boolean(nil), do: nil
+  defp normalize_boolean(value) when is_boolean(value), do: value
+  defp normalize_boolean(value) when is_integer(value), do: value != 0
+
+  defp normalize_boolean(value) when is_binary(value) do
+    value = String.trim(value)
+
+    cond do
+      value == "" -> nil
+      String.downcase(value) in ["false", "0", "no"] -> false
+      true -> true
+    end
+  end
+
+  defp normalize_boolean(_), do: nil
 
   defp respond_with_error(conn, options, status, error_code, reason, description, attrs) do
     data = %{"reason" => reason}
