@@ -91,12 +91,13 @@ defmodule AshAi.Mcp.ServerTest do
       assert resp["jsonrpc"] == "2.0"
       assert resp["id"] == "2"
       assert resp["result"] != nil
-      assert resp["result"]["type"] == "tool_result"
-      assert %{"result" => %{"content" => [%{"type" => _content_type, "data" => _data}]}} = resp
+      assert resp["result"]["isError"] == false
+      assert %{"result" => %{"content" => [%{"type" => _content_type}]}} = resp
 
       # Check that our test artist is in the results
       [content] = resp["result"]["content"]
-      artists = content["data"]
+      assert content["type"] == "text"
+      artists = Jason.decode!(content["text"])
       assert Enum.any?(artists, fn a -> a["name"] == "Test Artist" end)
     end
   end

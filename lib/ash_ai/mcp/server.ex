@@ -244,7 +244,7 @@ defmodule AshAi.Mcp.Server do
               "title" => tool_def.title,
               "description" => function.description,
               "inputSchema" => function.parameters_schema,
-              "defaultContentType" => tool_def.default_content_type || "application/json",
+              "defaultContentType" => tool_def.default_content_type || "text",
               "outputSchema" => tool_def.output_schema,
               "_meta" =>
                 %{}
@@ -354,7 +354,7 @@ defmodule AshAi.Mcp.Server do
 
                 result_payload =
                   AshAi.Mcp.ResponseBuilder.tool_result(
-                    content_type: tool_def.default_content_type || "application/json",
+                    content_type: tool_def.default_content_type || "text",
                     data: data,
                     schema: tool_def.output_schema,
                     resource_links: resource_links,
@@ -549,7 +549,7 @@ defmodule AshAi.Mcp.Server do
 
     Map.merge(Map.from_struct(tool_def), %{
       title: title,
-      default_content_type: Map.get(tool_def, :default_content_type) || "application/json",
+      default_content_type: Map.get(tool_def, :default_content_type) || "text",
       output_schema: output_schema,
       category: category,
       version: Map.get(tool_def, :version) || "1.0.0",

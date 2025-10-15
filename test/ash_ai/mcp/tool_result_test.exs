@@ -80,7 +80,6 @@ defmodule AshAi.Mcp.ToolResultTest do
       [tool] = tools
       assert tool["name"] == "list_artists"
       assert tool["title"] == "List Artists"
-      assert tool["defaultContentType"] == "application/json"
       assert tool["outputSchema"]["anyOf"] |> is_list()
 
       meta = tool["_meta"]
@@ -124,16 +123,14 @@ defmodule AshAi.Mcp.ToolResultTest do
       response = Router.call(conn, @opts)
       result = response.resp_body |> Jason.decode!() |> get_in(["result"])
 
-      assert result["type"] == "tool_result"
+      assert result["isError"] == false
 
       [content] = result["content"]
-      assert content["type"] == "application/json"
-      assert is_list(content["data"])
-      assert Enum.any?(content["data"], &(&1["name"] == "Schema Artist"))
+      assert content["type"] == "text"
+      assert is_binary(content["text"])
 
-      schema = content["schema"]
-      assert is_map(schema)
-      assert Map.has_key?(schema, "anyOf")
+      # Verify the text content contains the artist data
+      assert String.contains?(content["text"], "Schema Artist")
 
       links = result["resourceLinks"]
 
@@ -234,12 +231,12 @@ defmodule AshAi.Mcp.ToolResultTest do
     response = Router.call(conn, opts_without_base)
     result = response.resp_body |> Jason.decode!() |> get_in(["result"])
 
-    assert result["type"] == "tool_result"
+    assert result["isError"] == false
     assert is_nil(result["resourceLinks"])
 
     [content] = result["content"]
-    assert content["type"] == "application/json"
-    assert is_list(content["data"])
+    assert content["type"] == "text"
+    assert is_binary(content["text"])
 
     # Restore original env var if it existed
     if original_env do

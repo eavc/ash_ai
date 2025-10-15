@@ -17,11 +17,16 @@ defmodule AshAi.Mcp.ResponseBuilder do
       |> Keyword.get(:resource_links, [])
       |> merge_resource_links(builder_links)
 
+    data = Keyword.get(opts, :data)
+    schema = Keyword.get(opts, :schema)
+    is_error = Keyword.get(opts, :is_error, false)
+
     %{
-      "type" => "tool_result",
       "content" => [content(opts)],
+      "isError" => is_error,
       "_meta" => meta
     }
+    |> maybe_put("structuredContent", structured_content(data, schema))
     |> maybe_put_resource_links(resource_links)
   end
 
@@ -56,14 +61,73 @@ defmodule AshAi.Mcp.ResponseBuilder do
   end
 
   defp content(opts) do
-    content = %{"type" => Keyword.fetch!(opts, :content_type)}
-    schema = Keyword.get(opts, :schema)
+    content_type = Keyword.fetch!(opts, :content_type)
     data = Keyword.get(opts, :data)
 
-    content
-    |> maybe_put("schema", schema)
-    |> maybe_put("data", data)
+    case content_type do
+      "text" ->
+        %{
+          "type" => "text",
+          "text" => format_text_content(data)
+        }
+
+      "image" ->
+        %{
+          "type" => "image",
+          "data" => data["data"] || data[:data] || "",
+          "mimeType" => data["mimeType"] || data[:mimeType] || "image/png"
+        }
+
+      "audio" ->
+        %{
+          "type" => "audio",
+          "data" => data["data"] || data[:data] || "",
+          "mimeType" => data["mimeType"] || data[:mimeType] || "audio/wav"
+        }
+
+      "resource" ->
+        %{
+          "type" => "resource",
+          "resource" => data
+        }
+
+      "resource_link" ->
+        %{
+          "type" => "resource_link",
+          "uri" => data["uri"] || data[:uri] || "",
+          "name" => data["name"] || data[:name] || ""
+        }
+        |> maybe_put("description", data["description"] || data[:description])
+        |> maybe_put("mimeType", data["mimeType"] || data[:mimeType])
+
+      _other ->
+        # Fallback to text for unknown types
+        %{
+          "type" => "text",
+          "text" => format_text_content(data)
+        }
+    end
   end
+
+  defp format_text_content(data) when is_binary(data), do: data
+
+  defp format_text_content(data) when is_map(data) or is_list(data) do
+    case Jason.encode(data) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(data)
+    end
+  end
+
+  defp format_text_content(data), do: to_string(data)
+
+  defp structured_content(nil, _schema), do: nil
+  defp structured_content(_data, nil), do: nil
+
+  defp structured_content(data, _schema) when is_map(data) or is_list(data) do
+    data
+  end
+
+  defp structured_content(_data, _schema), do: nil
 
   defp meta_only(opts) do
     opts
