@@ -65,6 +65,7 @@ defmodule AshAi.Mcp.Server do
     opts = conn.assigns[:router_opts] || []
     keepalive_interval = Keyword.get(opts, :sse_keepalive_interval_ms, 15_000)
     keepalive_max_count = Keyword.get(opts, :sse_keepalive_max_count, :infinity)
+
     conn =
       conn
       |> Plug.Conn.put_private(:ash_ai_sse_keepalive_interval, keepalive_interval)

@@ -119,13 +119,6 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
             {:error, reason} ->
               Logger.warning("❌ Token validation failed: #{inspect(reason)}")
               :error
-
-            other ->
-              Logger.warning(
-                "❌ Token validation failed with unexpected result: #{inspect(other)}"
-              )
-
-              :error
           end
 
         {:error, reason} ->

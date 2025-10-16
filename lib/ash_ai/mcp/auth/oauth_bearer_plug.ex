@@ -314,27 +314,44 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
     end
   end
 
-  defp validate_scopes(_claims, %{required_scopes: []}) do
+  defp validate_scopes(_claims, %{required_scopes: scopes}) when scopes in [nil, []] do
     Logger.debug("Scope validation skipped (no required scopes)")
     :ok
   end
 
   defp validate_scopes(claims, %{required_scopes: required} = opts) do
-    granted = Scope.scopes_from_claims(claims)
+    if scope_enforcement_disabled?() do
+      Logger.debug(
+        "Scope validation skipped (MCP_REQUIRED_SCOPES unset or blank; enforcement disabled)"
+      )
 
-    Logger.debug("Validating scopes: required=#{inspect(required)}, granted=#{inspect(granted)}")
+      :ok
+    else
+      granted = Scope.scopes_from_claims(claims)
 
-    case Scope.missing_scopes(required, granted) do
-      [] ->
-        :ok
+      Logger.debug(
+        "Validating scopes: required=#{inspect(required)}, granted=#{inspect(granted)}"
+      )
 
-      missing ->
-        Logger.warning("❌ Missing required scopes: #{inspect(missing)}")
-        emit_insufficient_scope(opts, required, missing, granted)
+      case Scope.missing_scopes(required, granted) do
+        [] ->
+          :ok
 
-        {:error, 403, "insufficient_scope", "insufficient_scope",
-         "Bearer token missing required scopes",
-         [{"scope", Enum.join(required, " ")}, {"missing", Enum.join(missing, " ")}]}
+        missing ->
+          Logger.warning("❌ Missing required scopes: #{inspect(missing)}")
+          emit_insufficient_scope(opts, required, missing, granted)
+
+          {:error, 403, "insufficient_scope", "insufficient_scope",
+           "Bearer token missing required scopes",
+           [{"scope", Enum.join(required, " ")}, {"missing", Enum.join(missing, " ")}]}
+      end
+    end
+  end
+
+  defp scope_enforcement_disabled? do
+    case System.get_env("MCP_REQUIRED_SCOPES") do
+      nil -> true
+      value -> String.trim(value) == ""
     end
   end
 
@@ -438,8 +455,10 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
     result
   end
 
-  defp workos_issuer?(issuers) when is_list(issuers) do
-    Enum.any?(issuers, fn
+  defp workos_issuer?(issuers) do
+    issuers
+    |> List.wrap()
+    |> Enum.any?(fn
       issuer when is_binary(issuer) ->
         issuer
         |> URI.parse()
@@ -453,8 +472,6 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
         false
     end)
   end
-
-  defp workos_issuer?(_), do: false
 
   defp normalize_boolean(nil), do: nil
   defp normalize_boolean(value) when is_boolean(value), do: value

@@ -1,5 +1,5 @@
 defmodule AshAi.Mcp.Auth.OAuthBearerPlugTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   import Plug.{Conn, Test}
 
   alias AshAi.Mcp.Auth.OAuthBearerPlug
@@ -162,40 +162,55 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlugTest do
   end
 
   test "insufficient scopes respond with 403" do
-    with_telemetry(
-      [
+    with_env("MCP_REQUIRED_SCOPES", "read", fn ->
+      with_telemetry(
+        [
+          [:ash_ai, :mcp, :oauth, :verify],
+          [:ash_ai, :mcp, :oauth, :insufficient_scope]
+        ],
+        fn ->
+          conn =
+            conn_with_opts(:post, "/", %{}, [])
+            |> put_req_header("authorization", "Bearer scope-token")
+
+          conn = OAuthBearerPlug.call(conn, OAuthBearerPlug.init([]))
+
+          assert conn.status == 403
+          [auth_header] = get_resp_header(conn, "www-authenticate")
+          assert auth_header =~ "insufficient_scope"
+        end
+      )
+
+      assert_receive {
+        :telemetry_event,
         [:ash_ai, :mcp, :oauth, :verify],
-        [:ash_ai, :mcp, :oauth, :insufficient_scope]
-      ],
-      fn ->
-        conn =
-          conn_with_opts(:post, "/", %{}, [])
-          |> put_req_header("authorization", "Bearer scope-token")
+        _measurements,
+        %{status: :ok}
+      }
 
-        conn = OAuthBearerPlug.call(conn, OAuthBearerPlug.init([]))
+      assert_receive {
+        :telemetry_event,
+        [:ash_ai, :mcp, :oauth, :insufficient_scope],
+        %{count: 1} = measurements,
+        %{missing_scopes: missing}
+      }
 
-        assert conn.status == 403
-        [auth_header] = get_resp_header(conn, "www-authenticate")
-        assert auth_header =~ "insufficient_scope"
-      end
-    )
+      assert measurements[:count] == 1
+      assert missing == ["read"]
+    end)
+  end
 
-    assert_receive {
-      :telemetry_event,
-      [:ash_ai, :mcp, :oauth, :verify],
-      _measurements,
-      %{status: :ok}
-    }
+  test "scope enforcement disabled when MCP_REQUIRED_SCOPES blank" do
+    with_env("MCP_REQUIRED_SCOPES", "", fn ->
+      conn =
+        conn_with_opts(:post, "/", %{}, [])
+        |> put_req_header("authorization", "Bearer scope-token")
 
-    assert_receive {
-      :telemetry_event,
-      [:ash_ai, :mcp, :oauth, :insufficient_scope],
-      %{count: 1} = measurements,
-      %{missing_scopes: missing}
-    }
+      conn = OAuthBearerPlug.call(conn, OAuthBearerPlug.init([]))
 
-    assert measurements[:count] == 1
-    assert missing == ["read"]
+      refute conn.halted
+      assert conn.status != 403
+    end)
   end
 
   test "invalid resource indicator responds with 401" do
