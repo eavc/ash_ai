@@ -8,7 +8,9 @@ defmodule AshAi.Mcp.SseTransportTest do
     tools: [],
     otp_app: :ash_ai,
     public_base_url: "https://example.invalid",
-    oauth_required?: false
+    oauth_required?: false,
+    sse_keepalive_interval_ms: 5,
+    sse_keepalive_max_count: 1
   ]
   @protocol "2025-06-18"
 
@@ -42,6 +44,10 @@ defmodule AshAi.Mcp.SseTransportTest do
     assert get_resp_header(response, "content-type") == ["text/event-stream"]
 
     assert response.resp_body =~ "event: endpoint"
+    assert response.private[:ash_ai_sse_keepalive_limit] == 1
+    assert response.private[:ash_ai_sse_keepalive_interval] == 5
+    assert response.private[:ash_ai_sse_keepalive_count] == 1
+    assert response.private[:ash_ai_sse_keepalive_error] == nil
 
     [_, data] = Regex.run(~r/data: (.+)\n\n/, response.resp_body)
     payload = Jason.decode!(data)

@@ -62,6 +62,13 @@ defmodule AshAi.Mcp.Server do
   """
   def handle_get(conn, session_id) do
     accept_header = Plug.Conn.get_req_header(conn, "accept")
+    opts = conn.assigns[:router_opts] || []
+    keepalive_interval = Keyword.get(opts, :sse_keepalive_interval_ms, 15_000)
+    keepalive_max_count = Keyword.get(opts, :sse_keepalive_max_count, :infinity)
+    conn =
+      conn
+      |> Plug.Conn.put_private(:ash_ai_sse_keepalive_interval, keepalive_interval)
+      |> Plug.Conn.put_private(:ash_ai_sse_keepalive_limit, keepalive_max_count)
 
     if Enum.any?(accept_header, &String.contains?(&1, "text/event-stream")) do
       # Get the current host and path to create the post URL
@@ -74,7 +81,7 @@ defmodule AshAi.Mcp.Server do
       conn
       |> Plug.Conn.put_resp_header(
         "mcp-protocol-version",
-        expected_protocol_version(conn, conn.assigns[:router_opts] || [])
+        expected_protocol_version(conn, opts)
       )
       |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
       |> Plug.Conn.put_resp_header("cache-control", "no-store")
@@ -91,13 +98,14 @@ defmodule AshAi.Mcp.Server do
           }
         })
       )
+      |> keep_sse_alive(keepalive_interval, keepalive_max_count)
       |> Plug.Conn.halt()
     else
       # Client doesn't support SSE
       conn
       |> Plug.Conn.put_resp_header(
         "mcp-protocol-version",
-        expected_protocol_version(conn, conn.assigns[:router_opts] || [])
+        expected_protocol_version(conn, opts)
       )
       |> Plug.Conn.send_resp(400, "Client must accept text/event-stream")
     end
@@ -130,6 +138,38 @@ defmodule AshAi.Mcp.Server do
       {:ok, conn} = Plug.Conn.chunk(conn, chunk)
       conn
     end)
+  end
+
+  defp keep_sse_alive(conn, _interval, count) when is_integer(count) and count <= 0, do: conn
+
+  defp keep_sse_alive(conn, interval, :infinity) do
+    case maybe_send_keepalive(conn, interval) do
+      {:cont, conn} -> keep_sse_alive(conn, interval, :infinity)
+      {:halt, conn} -> conn
+    end
+  end
+
+  defp keep_sse_alive(conn, interval, count) when is_integer(count) and count > 0 do
+    case maybe_send_keepalive(conn, interval) do
+      {:cont, conn} -> keep_sse_alive(conn, interval, count - 1)
+      {:halt, conn} -> conn
+    end
+  end
+
+  defp maybe_send_keepalive(conn, interval) do
+    if interval > 0 do
+      Process.sleep(interval)
+    end
+
+    case Plug.Conn.chunk(conn, ": keepalive\n\n") do
+      {:ok, conn} ->
+        keepalive_count = Map.get(conn.private, :ash_ai_sse_keepalive_count, 0) + 1
+        {:cont, Plug.Conn.put_private(conn, :ash_ai_sse_keepalive_count, keepalive_count)}
+
+      {:error, reason} ->
+        conn = Plug.Conn.put_private(conn, :ash_ai_sse_keepalive_error, reason)
+        {:halt, conn}
+    end
   end
 
   @doc """
