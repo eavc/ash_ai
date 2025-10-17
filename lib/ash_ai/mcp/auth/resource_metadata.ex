@@ -3,7 +3,7 @@ defmodule AshAi.Mcp.Auth.ResourceMetadata do
 
   import Plug.Conn
 
-  alias AshAuthentication.Jwt
+  alias AshAi.Mcp.Auth.Helpers
 
   @behaviour Plug
 
@@ -38,7 +38,8 @@ defmodule AshAi.Mcp.Auth.ResourceMetadata do
     opts = Map.merge(init_opts, router_opts)
 
     public_base_url =
-      opts[:public_base_url] || System.get_env("MCP_PUBLIC_URL") || default_public_base_url(conn)
+      opts[:public_base_url] || System.get_env("MCP_PUBLIC_URL") ||
+        Helpers.default_public_base_url(conn)
 
     resource_path = opts[:resource_path] || "/mcp"
 
@@ -54,13 +55,13 @@ defmodule AshAi.Mcp.Auth.ResourceMetadata do
       opts
       |> Map.get(:required_scopes) || System.get_env("MCP_REQUIRED_SCOPES") ||
         []
-        |> normalize_scopes()
+        |> Helpers.normalize_scopes()
 
     authorization_servers =
       opts
       |> Map.get(:authorization_servers, System.get_env("MCP_AUTHORIZATION_SERVERS"))
-      |> derive_authorization_servers(opts)
-      |> normalize_list()
+      |> Helpers.derive_authorization_servers(opts)
+      |> Helpers.normalize_list()
 
     documentation =
       opts
@@ -71,15 +72,15 @@ defmodule AshAi.Mcp.Auth.ResourceMetadata do
       |> Map.get(:token_endpoint_auth_methods_supported) ||
         System.get_env("MCP_TOKEN_ENDPOINT_AUTH_METHODS") ||
         ["client_secret_post", "client_secret_basic"]
-        |> normalize_list()
+        |> Helpers.normalize_list()
 
     # Default to RS256 when authorization_servers are present (OIDC/Auth0 convention)
     # Otherwise fall back to AshAuthentication's default algorithm
     signing_algorithms =
       opts
       |> Map.get(:resource_signing_algorithms_supported) ||
-        default_signing_algorithms(authorization_servers)
-        |> normalize_list()
+        Helpers.default_signing_algorithms(authorization_servers)
+        |> Helpers.normalize_list()
 
     Map.merge(opts, %{
       public_base_url: public_base_url,
@@ -107,112 +108,4 @@ defmodule AshAi.Mcp.Auth.ResourceMetadata do
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Map.new()
   end
-
-  defp default_public_base_url(conn) do
-    case get_req_header(conn, "host") do
-      [host | _] ->
-        scheme = if conn.scheme == :https, do: "https", else: "http"
-        "#{scheme}://#{host}"
-
-      _ ->
-        raise ArgumentError,
-              "Unable to determine MCP public URL. Configure :public_base_url or MCP_PUBLIC_URL"
-    end
-  end
-
-  defp normalize_scopes(scopes) do
-    scopes
-    |> normalize_list_like()
-    |> Enum.reject(&(&1 == ""))
-  end
-
-  defp normalize_list(values) do
-    values
-    |> normalize_list_like()
-    |> Enum.reject(&(&1 == ""))
-  end
-
-  defp normalize_list_like(value) do
-    if is_binary(value) do
-      value
-      |> String.split([",", " "], trim: true)
-      |> Enum.map(&String.trim/1)
-    else
-      value
-      |> List.wrap()
-      |> Enum.map(&to_string/1)
-    end
-  end
-
-  defp default_signing_algorithms(authorization_servers) when is_list(authorization_servers) do
-    if Enum.empty?(authorization_servers) do
-      [Jwt.default_algorithm()]
-    else
-      ["RS256"]
-    end
-  end
-
-  defp derive_authorization_servers(value, opts) do
-    value
-    |> normalize_authorization_value()
-    |> case do
-      [] -> authorization_servers_from_context(Map.get(opts, :verifier_context))
-      list -> list
-    end
-  end
-
-  defp normalize_authorization_value(nil), do: []
-
-  defp normalize_authorization_value(value) do
-    value
-    |> normalize_list_like()
-    |> Enum.reject(&(&1 in [nil, ""]))
-  end
-
-  defp authorization_servers_from_context(context) do
-    context = mapify(context)
-
-    explicit =
-      (Map.get(context, :authorization_servers) ||
-         Map.get(context, "authorization_servers") || [])
-      |> normalize_authorization_value()
-
-    issuers =
-      (Map.get(context, :issuers) || Map.get(context, "issuers") || [])
-      |> normalize_authorization_value()
-
-    issuer =
-      (Map.get(context, :issuer) || Map.get(context, "issuer"))
-      |> case do
-        nil -> []
-        value -> [to_string(value)]
-      end
-
-    issuer_servers =
-      (issuer ++ issuers)
-      |> Enum.map(&issuer_to_authorization_server/1)
-      |> Enum.reject(&is_nil/1)
-
-    explicit
-    |> Enum.concat(issuer_servers)
-    |> Enum.map(&to_string/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.uniq()
-  end
-
-  defp issuer_to_authorization_server(nil), do: nil
-
-  defp issuer_to_authorization_server(issuer) do
-    issuer
-    |> to_string()
-    |> String.trim()
-    |> case do
-      "" -> nil
-      trimmed -> String.trim_trailing(trimmed, "/") <> "/.well-known/oauth-authorization-server"
-    end
-  end
-
-  defp mapify(value) when is_map(value), do: value
-  defp mapify(value) when is_list(value), do: Map.new(value)
-  defp mapify(_), do: %{}
 end

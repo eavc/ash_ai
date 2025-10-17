@@ -1,5 +1,6 @@
 defmodule AshAi.Mcp.Auth.OAuthBearerPlugTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
   import Plug.{Conn, Test}
 
   alias AshAi.Mcp.Auth.OAuthBearerPlug
@@ -211,7 +212,7 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlugTest do
   test "scope enforcement disabled when MCP_REQUIRED_SCOPES blank" do
     with_env("MCP_REQUIRED_SCOPES", "", fn ->
       conn =
-        conn_with_opts(:post, "/", %{}, [])
+        conn_with_opts(:post, "/", %{}, required_scopes: [])
         |> put_req_header("authorization", "Bearer scope-token")
 
       conn = OAuthBearerPlug.call(conn, OAuthBearerPlug.init([]))
@@ -219,6 +220,31 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlugTest do
       refute conn.halted
       assert conn.status != 403
     end)
+  end
+
+  test "scope enforcement can be explicitly disabled" do
+    conn =
+      conn_with_opts(:post, "/", %{}, enforce_scopes?: false)
+      |> put_req_header("authorization", "Bearer scope-token")
+
+    conn = OAuthBearerPlug.call(conn, OAuthBearerPlug.init(enforce_scopes?: false))
+
+    refute conn.halted
+    assert conn.status != 403
+  end
+
+  test "bearer tokens are not logged" do
+    log =
+      capture_log(fn ->
+        conn =
+          conn_with_opts(:post, "/", %{}, [])
+          |> put_req_header("authorization", "Bearer tenant-token")
+
+        _ = OAuthBearerPlug.call(conn, OAuthBearerPlug.init([]))
+      end)
+
+    refute log =~ "tenant-token"
+    refute log =~ "Bearer tenant-token"
   end
 
   test "missing subject responds with 401" do

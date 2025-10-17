@@ -80,7 +80,7 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
   - `scope` and `missing` - For insufficient scope errors
   """
 
-  alias AshAi.Mcp.Auth.Scope
+  alias AshAi.Mcp.Auth.{Helpers, Scope}
   alias AshAi.Mcp.Server
   alias AshAuthentication
   require Logger
@@ -108,25 +108,16 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
   def call(%Plug.Conn{method: "OPTIONS"} = conn, _opts), do: conn
 
   def call(conn, init_opts) do
-    Logger.info("🔌 OAuth Bearer Plug called for #{conn.method} #{conn.request_path}")
+    Logger.debug("OAuth Bearer Plug invoked for #{conn.method} #{conn.request_path}")
     router_opts = conn.assigns[:router_opts] || []
     options = build_options(init_opts, router_opts, conn)
 
-    Logger.debug(
-      "OAuth options: required_scopes=#{inspect(options[:required_scopes])}, resource_indicator=#{options[:resource_indicator]}"
-    )
-
     with {:ok, token} <- fetch_bearer_token(conn, options),
-         _ <- Logger.debug("✅ Bearer token extracted"),
          {:ok, claims, resource} <- verify_token(token, options),
-         _ <- Logger.debug("✅ Token verified, subject=#{claims["sub"]}"),
          :ok <- validate_resource_indicator(claims, options),
-         _ <- Logger.debug("✅ Resource indicator validated"),
          :ok <- validate_scopes(claims, options),
-         _ <- Logger.debug("✅ Scopes validated"),
-         {:ok, actor} <- resolve_actor(claims, resource, options),
-         _ <- Logger.info("✅ Actor resolved: #{inspect(actor.id)}") do
-      Logger.info("🎉 OAuth authentication successful")
+         {:ok, actor} <- resolve_actor(claims, resource, options) do
+      Logger.debug("OAuth authentication succeeded for request #{conn.request_path}")
 
       conn
       |> maybe_put_tenant(claims)
@@ -155,7 +146,7 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
       cond do
         opts[:public_base_url] -> opts[:public_base_url]
         System.get_env("MCP_PUBLIC_URL") -> System.get_env("MCP_PUBLIC_URL")
-        required? -> default_public_base_url(conn)
+        required? -> Helpers.default_public_base_url(conn)
         true -> nil
       end
 
@@ -165,7 +156,13 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
       opts
       |> Map.get(:required_scopes) || System.get_env("MCP_REQUIRED_SCOPES") ||
         []
-        |> normalize_scopes()
+        |> Helpers.normalize_scopes()
+
+    enforce_scopes? =
+      case Map.fetch(opts, :enforce_scopes?) do
+        {:ok, value} -> truthy?(value)
+        :error -> required_scopes != []
+      end
 
     verifier = opts[:verifier] || (&AshAuthentication.Jwt.verify/4)
     subject_resolver = opts[:subject_resolver] || (&default_subject_resolver/3)
@@ -198,52 +195,19 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
       resource_path: normalized_path,
       resource_indicator: resource_indicator,
       required_scopes: required_scopes,
+      enforce_scopes?: enforce_scopes?,
       verifier: verifier,
       subject_resolver: subject_resolver,
       verify_target: verify_target
     })
   end
 
-  defp default_public_base_url(conn) do
-    case get_req_header(conn, "host") do
-      [host | _] ->
-        scheme = if conn.scheme == :https, do: "https", else: "http"
-        "#{scheme}://#{host}"
-
-      _ ->
-        raise ArgumentError,
-              "Unable to determine MCP public URL. Configure :public_base_url or MCP_PUBLIC_URL"
-    end
-  end
-
-  defp normalize_scopes(scopes) do
-    scopes
-    |> normalize_scope_source()
-    |> Enum.reject(&(&1 == ""))
-  end
-
-  defp normalize_scope_source(scopes) do
-    if is_binary(scopes) do
-      scopes
-      |> String.split([",", " "], trim: true)
-      |> Enum.map(&String.trim/1)
-    else
-      scopes
-      |> List.wrap()
-      |> Enum.map(&to_string/1)
-    end
-  end
-
   defp fetch_bearer_token(conn, %{required?: required?}) do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token | _] ->
-        Logger.debug("Received Bearer token (first 50 chars): #{String.slice(token, 0, 50)}...")
-        Logger.warning("Full token: '#{token}'")
         {:ok, token}
 
       ["bearer " <> token | _] ->
-        Logger.debug("Received bearer token (first 50 chars): #{String.slice(token, 0, 50)}...")
-        Logger.warning("Full token: '#{token}'")
         {:ok, token}
 
       [_ | _] ->
@@ -314,44 +278,26 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
     end
   end
 
-  defp validate_scopes(_claims, %{required_scopes: scopes}) when scopes in [nil, []] do
-    Logger.debug("Scope validation skipped (no required scopes)")
-    :ok
-  end
+  defp validate_scopes(_claims, %{required_scopes: scopes}) when scopes in [nil, []], do: :ok
 
   defp validate_scopes(claims, %{required_scopes: required} = opts) do
-    if scope_enforcement_disabled?() do
-      Logger.debug(
-        "Scope validation skipped (MCP_REQUIRED_SCOPES unset or blank; enforcement disabled)"
-      )
-
-      :ok
-    else
+    if Map.get(opts, :enforce_scopes?) do
       granted = Scope.scopes_from_claims(claims)
-
-      Logger.debug(
-        "Validating scopes: required=#{inspect(required)}, granted=#{inspect(granted)}"
-      )
 
       case Scope.missing_scopes(required, granted) do
         [] ->
           :ok
 
         missing ->
-          Logger.warning("❌ Missing required scopes: #{inspect(missing)}")
+          Logger.warning("Bearer token missing required scopes: #{inspect(missing)}")
           emit_insufficient_scope(opts, required, missing, granted)
 
           {:error, 403, "insufficient_scope", "insufficient_scope",
            "Bearer token missing required scopes",
            [{"scope", Enum.join(required, " ")}, {"missing", Enum.join(missing, " ")}]}
       end
-    end
-  end
-
-  defp scope_enforcement_disabled? do
-    case System.get_env("MCP_REQUIRED_SCOPES") do
-      nil -> true
-      value -> String.trim(value) == ""
+    else
+      :ok
     end
   end
 
@@ -362,7 +308,7 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
         {:error, 401, "invalid_token", "missing_subject", "Token missing subject", []}
 
       subject ->
-        Logger.debug("Resolving subject '#{subject}' to actor using #{inspect(resource)}")
+        Logger.debug("Resolving authenticated subject using #{inspect(resource)}")
         resolver.(subject, resource, resolver_opts(opts, claims))
     end
   end
@@ -520,15 +466,7 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
       end
 
     # Add error_uri pointing to discovery endpoint if we have public_base_url
-    error_uri_attrs =
-      case Map.get(options, :public_base_url) do
-        nil ->
-          []
-
-        base_url ->
-          uri = String.trim_trailing(base_url, "/") <> @metadata_path
-          [{"error_uri", uri}]
-      end
+    error_uri_attrs = Helpers.build_error_uri(Map.get(options, :public_base_url))
 
     params =
       attrs
@@ -711,4 +649,22 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
+
+  defp truthy?(value) when is_boolean(value), do: value
+  defp truthy?(value) when is_integer(value), do: value != 0
+
+  defp truthy?(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      "false" -> false
+      "0" -> false
+      "no" -> false
+      _ -> true
+    end
+  end
+
+  defp truthy?(_), do: nil
 end
