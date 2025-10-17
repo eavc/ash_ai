@@ -83,7 +83,7 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   end
 
   def verify(token, _target, _opts, context) when is_map(context) do
-    Logger.info("🔐 Starting token verification")
+    Logger.debug("Starting token verification")
     context = normalize_context(context)
     Logger.debug("Normalized context: #{inspect(Map.drop(context, [:actor_resource]))}")
 
@@ -104,7 +104,6 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
       case verify_signature_strict(token, jwk, context) do
         {:ok, claims} ->
           Logger.debug("✅ Signature verified successfully")
-          Logger.debug("Token claims: #{inspect(claims)}")
 
           with :ok <- validate_issuer(claims, context),
                _ <- Logger.debug("✅ Issuer validated"),
@@ -113,7 +112,7 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
                :ok <- validate_expiration(claims, context),
                _ <- Logger.debug("✅ Expiration validated") do
             resource = Map.fetch!(context, :actor_resource)
-            Logger.info("🎉 Token verification successful for subject: #{claims["sub"]}")
+            Logger.debug("Token verification successful")
             {:ok, claims, resource}
           else
             {:error, reason} ->
@@ -156,7 +155,6 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     actor_resource = fetch.(context, :actor_resource)
     jwks_overrides = fetch.(context, :jwks_overrides) || %{}
     clock_skew_seconds = fetch.(context, :clock_skew_seconds) || 30
-    workos_client_id = fetch.(context, :workos_client_id) || fetch_workos_client_id()
 
     enforce_resource_audience? =
       case fetch.(context, :enforce_resource_audience?) do
@@ -178,7 +176,6 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
       actor_resource: actor_resource,
       jwks_overrides: jwks_overrides,
       clock_skew_seconds: clock_skew_seconds,
-      workos_client_id: workos_client_id,
       enforce_resource_audience?: enforce_resource_audience?
     }
   end
@@ -403,10 +400,6 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
   end
 
   defp workos_issuer?(_), do: false
-
-  defp fetch_workos_client_id do
-    System.get_env("WORKOS_MCP_CLIENT_ID") || System.get_env("WORKOS_CLIENT_ID")
-  end
 
   defp refetch_and_verify(token, context, issuer, kid) do
     with {:ok, jwks} <- JwksCache.get_jwks(issuer, context),

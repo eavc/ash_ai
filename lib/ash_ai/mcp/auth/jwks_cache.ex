@@ -352,25 +352,23 @@ defmodule AshAi.Mcp.Auth.JwksCache do
     end
   end
 
-  defp build_jwks_url(issuer, context) do
+  @doc false
+  def build_jwks_url(issuer, _context) do
     issuer_host =
       issuer
       |> URI.parse()
       |> Map.get(:host)
 
-    workos_client_id =
-      Map.get(context, :workos_client_id) ||
-        System.get_env("WORKOS_MCP_CLIENT_ID") ||
-        System.get_env("WORKOS_CLIENT_ID")
+    issuer_base =
+      issuer
+      |> to_string()
+      |> String.trim()
+      |> String.trim_trailing("/")
 
-    if issuer_host && String.ends_with?(issuer_host, ".authkit.app") &&
-         is_binary(workos_client_id) do
-      # WorkOS AuthKit serves JWKS from the WorkOS API instead of the issuer host.
-      # We keep caching mapped to the original issuer so existing callers do not need
-      # special handling.
-      {"https://api.workos.com/sso/jwks/#{workos_client_id}", issuer}
+    if issuer_host && String.ends_with?(issuer_host, ".authkit.app") do
+      {"#{issuer_base}/oauth2/jwks", issuer}
     else
-      {"#{issuer}/.well-known/jwks.json", issuer}
+      {"#{issuer_base}/.well-known/jwks.json", issuer}
     end
   end
 

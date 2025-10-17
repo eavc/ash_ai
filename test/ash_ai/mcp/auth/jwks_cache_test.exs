@@ -119,4 +119,22 @@ defmodule AshAi.Mcp.Auth.JwksCacheTest do
       assert {:ok, ^new_jwks} = JwksCache.get_jwks(issuer, new_context)
     end
   end
+
+  describe "JWKS URL building" do
+    test "uses oauth2 jwks endpoint for AuthKit issuers" do
+      issuer = "https://tenant.authkit.app"
+      {url, cache_key} = JwksCache.build_jwks_url(issuer, %{})
+
+      assert url == "https://tenant.authkit.app/oauth2/jwks"
+      assert cache_key == issuer
+    end
+
+    test "uses well-known JWKS endpoint for standard issuers" do
+      issuer = "https://issuer.example.invalid"
+      {url, cache_key} = JwksCache.build_jwks_url(issuer, %{})
+
+      assert url == "https://issuer.example.invalid/.well-known/jwks.json"
+      assert cache_key == issuer
+    end
+  end
 end
