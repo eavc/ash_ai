@@ -89,6 +89,10 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
 
   @behaviour Plug
 
+  @jwt Module.concat(AshAuthentication, Jwt)
+  @compile {:no_warn_undefined, {@jwt, :verify, 4}}
+  @compile {:no_warn_undefined, {AshAuthentication, :subject_to_user, 3}}
+
   @metadata_path "/.well-known/oauth-protected-resource"
   @telemetry_prefix [:ash_ai, :mcp, :oauth]
 
@@ -164,8 +168,8 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
         :error -> required_scopes != []
       end
 
-    verifier = opts[:verifier] || (&AshAuthentication.Jwt.verify/4)
-    subject_resolver = opts[:subject_resolver] || (&default_subject_resolver/3)
+    verifier = opts[:verifier] || default_verifier()
+    subject_resolver = opts[:subject_resolver] || default_subject_resolver_fun()
 
     otp_app = opts[:otp_app]
     verify_target = opts[:verify_target] || otp_app
@@ -320,11 +324,41 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlug do
     end
   end
 
-  defp default_subject_resolver(subject, resource, opts) do
-    case AshAuthentication.subject_to_user(subject, resource, opts) do
+  defp default_subject_resolver_fun do
+    if Code.ensure_loaded?(AshAuthentication) and
+         function_exported?(AshAuthentication, :subject_to_user, 3) do
+      &ash_subject_resolver/3
+    else
+      &unsupported_subject_resolver/3
+    end
+  end
+
+  defp default_verifier do
+    cond do
+      Code.ensure_loaded?(@jwt) and function_exported?(@jwt, :verify, 4) ->
+        fn token, target, opts, context -> apply(@jwt, :verify, [token, target, opts, context]) end
+
+      function_exported?(AshAi.Mcp.Auth.OidcJwksVerifier, :verify, 4) ->
+        &AshAi.Mcp.Auth.OidcJwksVerifier.verify/4
+
+      true ->
+        fn _token, _target, _opts, _context ->
+          {:error, 500, "unsupported_verifier", "verifier_not_configured",
+           "Provide :verifier when AshAuthentication is unavailable", []}
+        end
+    end
+  end
+
+  defp ash_subject_resolver(subject, resource, opts) do
+    case apply(AshAuthentication, :subject_to_user, [subject, resource, opts]) do
       {:ok, actor} -> {:ok, actor}
       _ -> {:error, 401, "invalid_token", "unknown_subject", "Unable to resolve subject", []}
     end
+  end
+
+  defp unsupported_subject_resolver(_subject, _resource, _opts) do
+    {:error, 500, "unsupported_subject_resolver", "resolver_not_configured",
+     "Provide :subject_resolver to map subjects without AshAuthentication", []}
   end
 
   defp maybe_put_tenant(conn, claims) do

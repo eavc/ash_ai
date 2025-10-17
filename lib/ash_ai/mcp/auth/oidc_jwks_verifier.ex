@@ -64,6 +64,10 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
 
   require Logger
 
+  @compile {:no_warn_undefined, {JOSE.JWK, :from, 1}}
+  @compile {:no_warn_undefined, {JOSE.JWT, :verify_strict, 3}}
+  @compile {:no_warn_undefined, {JOSE.JWT, :to_map, 1}}
+
   alias AshAi.Mcp.Auth.JwksCache
 
   @doc """
@@ -267,8 +271,12 @@ defmodule AshAi.Mcp.Auth.OidcJwksVerifier do
     allowed = Map.get(context, :algorithms, ["RS256"])
 
     case JOSE.JWT.verify_strict(jose_jwk, allowed, token) do
-      {true, %JOSE.JWT{fields: claims}, _jws} -> {:ok, stringify_keys(claims)}
-      {false, _jwt, _jws} -> {:error, :signature_verification_failed}
+      {true, jwt, _jws} ->
+        {_, claims} = JOSE.JWT.to_map(jwt)
+        {:ok, stringify_keys(claims)}
+
+      {false, _jwt, _jws} ->
+        {:error, :signature_verification_failed}
     end
   rescue
     e ->

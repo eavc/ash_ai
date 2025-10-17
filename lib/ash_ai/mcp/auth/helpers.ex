@@ -1,7 +1,8 @@
 defmodule AshAi.Mcp.Auth.Helpers do
   @moduledoc false
 
-  alias AshAuthentication.Jwt
+  @jwt Module.concat(AshAuthentication, Jwt)
+  @compile {:no_warn_undefined, {@jwt, :default_algorithm, 0}}
 
   @resource_metadata_path "/.well-known/oauth-protected-resource"
   @authorization_metadata_path "/.well-known/oauth-authorization-server"
@@ -75,13 +76,13 @@ defmodule AshAi.Mcp.Auth.Helpers do
   @spec default_signing_algorithms([String.t()]) :: [String.t()]
   def default_signing_algorithms(authorization_servers) when is_list(authorization_servers) do
     if Enum.empty?(authorization_servers) do
-      [Jwt.default_algorithm()]
+      [default_algorithm()]
     else
       ["RS256"]
     end
   end
 
-  def default_signing_algorithms(_), do: [Jwt.default_algorithm()]
+  def default_signing_algorithms(_), do: [default_algorithm()]
 
   @doc """
   Computes metadata for WWW-Authenticate error_uri parameter.
@@ -146,6 +147,14 @@ defmodule AshAi.Mcp.Auth.Helpers do
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
+  end
+
+  defp default_algorithm do
+    if Code.ensure_loaded?(@jwt) and function_exported?(@jwt, :default_algorithm, 0) do
+      apply(@jwt, :default_algorithm, [])
+    else
+      "RS256"
+    end
   end
 
   @doc """
