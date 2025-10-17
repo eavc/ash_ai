@@ -50,6 +50,9 @@ MCP_AUTHORIZATION_SERVERS=https://issuer-a.example/.well-known/oauth-authorizati
 MCP_WWW_AUTH_EXTRAS={"error_contact":"mailto:security@example.com"}
 ```
 
+If your provider does not issue OAuth scopes (for example, current WorkOS AuthKit tokens),
+leave `MCP_REQUIRED_SCOPES` unset or configure the plug with `enforce_scopes?: false`.
+
 When using OIDC/JWKS verification (with `--issuer` flag):
 
 ```bash
