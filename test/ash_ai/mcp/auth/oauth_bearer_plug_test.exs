@@ -69,6 +69,14 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlugTest do
          "tenant" => "acme"
        }, FakeResource}
 
+  def verify("nosub-token", _target, _opts, _ctx),
+    do:
+      {:ok,
+       %{
+         "aud" => "https://example.invalid/mcp",
+         "scope" => "read"
+       }, FakeResource}
+
   def verify(_, _target, _opts, _ctx), do: :error
 
   def resolve_subject("user:" <> id, _resource, opts) do
@@ -211,6 +219,21 @@ defmodule AshAi.Mcp.Auth.OAuthBearerPlugTest do
       refute conn.halted
       assert conn.status != 403
     end)
+  end
+
+  test "missing subject responds with 401" do
+    conn =
+      conn_with_opts(:post, "/", %{}, [])
+      |> put_req_header("authorization", "Bearer nosub-token")
+
+    conn = OAuthBearerPlug.call(conn, OAuthBearerPlug.init([]))
+
+    assert conn.status == 401
+    assert conn.halted
+
+    [header] = get_resp_header(conn, "www-authenticate")
+    assert header =~ ~s(error="invalid_token")
+    assert header =~ ~s(error_description="Token missing subject")
   end
 
   test "invalid resource indicator responds with 401" do
